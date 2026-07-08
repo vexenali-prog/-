@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Крипто-советник — индикаторы и сигналы</title>
 <style>
   :root {
@@ -33,14 +33,15 @@
   select, button, input {
     background: var(--panel); color: var(--text);
     border: 1px solid var(--border); border-radius: 6px;
-    padding: 8px 12px; font-size: 14px;
+    padding: 8px 12px; font-size: 16px; /* 16px — iOS не приближает страницу при фокусе */
   }
   input[type=number] { width: 110px; }
   button { cursor: pointer; }
   button:hover { border-color: var(--blue); }
   button.primary { background: #1f6feb; border-color: #1f6feb; }
+  button.small { padding: 4px 10px; font-size: 13px; }
   .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
-  @media (min-width: 800px) { .grid.two { grid-template-columns: 340px 1fr; } }
+  @media (min-width: 800px) { .grid.two { grid-template-columns: 360px 1fr; } }
   .card {
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 10px; padding: 16px; margin-bottom: 16px;
@@ -60,6 +61,8 @@
     border-bottom: 1px solid var(--border); align-items: center;
   }
   .row:last-child { border-bottom: none; }
+  .row.click { cursor: pointer; }
+  .row.click:hover { background: rgba(88,166,255,0.06); }
   .vote-buy { color: var(--green); }
   .vote-sell { color: var(--red); }
   .vote-neutral { color: var(--muted); }
@@ -75,6 +78,14 @@
   .inputs-line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; font-size: 13px; }
   .stat-line { font-size: 14px; margin: 4px 0; }
   .good { color: var(--green); } .bad { color: var(--red); }
+  .fng-value { font-size: 34px; font-weight: 700; }
+  .fng-bar { height: 8px; border-radius: 4px; margin: 8px 0 4px;
+    background: linear-gradient(90deg, #f85149, #d29922, #3fb950); position: relative; }
+  .fng-bar > div {
+    position: absolute; top: -4px; width: 4px; height: 16px; background: #fff; border-radius: 2px;
+  }
+  .toggles { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 10px; font-size: 13px; }
+  .toggles label { display: flex; gap: 6px; align-items: center; cursor: pointer; color: var(--muted); }
   .disclaimer {
     padding: 12px; border: 1px solid var(--yellow);
     border-radius: 8px; color: var(--yellow); font-size: 13px; line-height: 1.5;
@@ -85,7 +96,7 @@
 </head>
 <body>
   <h1>📈 Крипто-советник</h1>
-  <div class="sub">Живые котировки Coinbase · SMA · EMA · RSI · MACD · Полосы Боллинджера · OBV · ATR</div>
+  <div class="sub">Живые котировки Coinbase · SMA · EMA · RSI · MACD · Боллинджер · OBV · ATR · Страх/Жадность</div>
 
   <div class="controls">
     <select id="pair">
@@ -113,13 +124,34 @@
         <div class="verdict" id="verdict"></div>
         <div>Согласованность индикаторов: <b id="confPct"></b></div>
         <div class="confbar"><div id="confFill"></div></div>
+        <div class="chart-title">Как менялся сигнал (зелёный — за покупку)</div>
+        <canvas id="sparkChart" height="46"></canvas>
         <div class="rows" id="voteRows"></div>
+        <div class="toggles">
+          <label><input type="checkbox" id="notifyChk"> 🔔 Уведомлять о сильных сигналах (≥50%)</label>
+          <button class="small" id="shareBtn">📤 Поделиться сигналом</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>😨 Индекс страха и жадности</h2>
+        <div class="fng-value" id="fngValue">—</div>
+        <div class="fng-bar"><div id="fngMarker" style="left:50%"></div></div>
+        <div class="stat-line" id="fngLabel"></div>
+        <div class="muted">Настроение всего крипторынка. Экстремальный страх исторически чаще
+        встречался у дна (возможность), экстремальная жадность — у вершин (осторожно).</div>
       </div>
 
       <div class="card">
         <h2>⏱ На какой срок?</h2>
         <div class="rows" id="tfRows"></div>
         <div class="horizon-advice" id="horizonAdvice"></div>
+      </div>
+
+      <div class="card">
+        <h2>🔍 Сканер рынка (дневной график)</h2>
+        <div class="rows" id="scanRows"></div>
+        <div class="muted" style="margin-top:6px">Нажми на монету, чтобы открыть её анализ.</div>
       </div>
 
       <div class="card">
@@ -134,9 +166,29 @@
             <option value="5">5%</option>
           </select>
         </div>
+        <div class="inputs-line">
+          Стиль
+          <select id="planStyle">
+            <option value="cons">Осторожный (стоп 1×ATR, цель 1.5×)</option>
+            <option value="std" selected>Стандарт (стоп 1.5×ATR, цель 2.5×)</option>
+            <option value="aggr">Агрессивный (стоп 2×ATR, цель 4×)</option>
+          </select>
+        </div>
         <div class="stat-line" id="posSize"></div>
-        <div class="muted" style="margin-top:6px">Стоп-лосс = вход − 1.5×ATR, цель = вход + 2.5×ATR.
-        Риск — доля депозита, которую вы потеряете, если сработает стоп.</div>
+        <div class="muted" style="margin-top:6px">Риск — доля депозита, которую вы потеряете, если сработает стоп-лосс.</div>
+      </div>
+
+      <div class="card">
+        <h2>📒 Журнал сделок (бумажная торговля)</h2>
+        <div class="inputs-line">
+          Сумма $ <input type="number" id="tradeUsd" min="1" step="10" value="100">
+          <button class="small primary" id="openTradeBtn"></button>
+        </div>
+        <div class="rows" id="openTrades"></div>
+        <div class="rows" id="closedTrades"></div>
+        <div class="stat-line" id="journalTotal"></div>
+        <div class="muted" style="margin-top:6px">Сделки виртуальные — тренируйся без риска.
+        Данные хранятся только в этом браузере.</div>
       </div>
 
       <div class="card">
@@ -154,7 +206,7 @@
       </div>
     </div>
     <div class="card">
-      <div class="chart-title">Цена + SMA20 + EMA12/26 + Полосы Боллинджера</div>
+      <div class="chart-title">Цена + SMA20 + EMA12/26 + Боллинджер + уровни поддержки/сопротивления + сигналы ▲▼</div>
       <canvas id="priceChart" height="380"></canvas>
       <div class="chart-title">RSI (14) — выше 70 перекуплен, ниже 30 перепродан</div>
       <canvas id="rsiChart" height="110"></canvas>
@@ -172,7 +224,9 @@ const TFS = [
   { g: 21600, label: '6 часов', horizon: 'дни — неделя' },
   { g: 86400, label: '1 день',  horizon: 'недели — месяцы' },
 ];
-const state = { byTf: {}, pair: null };
+const PAIRS = ['BTC-USD', 'ETH-USD', 'SOL-USD', 'XRP-USD', 'DOGE-USD', 'ADA-USD'];
+const PLAN_STYLES = { cons: [1, 1.5], std: [1.5, 2.5], aggr: [2, 4] };
+const state = { byTf: {}, pair: null, scan: [], prices: {}, notified: {}, fng: null };
 
 async function fetchCandles(pair, granularity) {
   const url = `https://api.exchange.coinbase.com/products/${pair}/candles?granularity=${granularity}`;
@@ -182,6 +236,15 @@ async function fetchCandles(pair, granularity) {
   // Coinbase: [time, low, high, open, close, volume], новейшие первыми — разворачиваем
   raw.sort((a, b) => a[0] - b[0]);
   return raw.map(c => ({ time: c[0], low: c[1], high: c[2], open: c[3], close: c[4], volume: c[5] }));
+}
+
+async function fetchFng() {
+  try {
+    const res = await fetch('https://api.alternative.me/fng/');
+    const j = await res.json();
+    const d = j.data && j.data[0];
+    return d ? { value: parseInt(d.value), label: d.value_classification } : null;
+  } catch { return null; }
 }
 
 // ---- Индикаторы по всей серии ----
@@ -200,7 +263,7 @@ function computeIndicators(candles) {
   };
 }
 
-// ---- Голоса индикаторов в точке i (используется и для «сейчас», и для бэктеста) ----
+// ---- Голоса индикаторов в точке i ----
 function votesAt(ind, i) {
   const votes = [];
   const add = (name, score, weight, note) => votes.push({ name, score, weight, note });
@@ -208,9 +271,8 @@ function votesAt(ind, i) {
 
   if (ind.ema12[i] != null && ind.ema26[i] != null) {
     const diff = (ind.ema12[i] - ind.ema26[i]) / c;
-    votes.push({ name: 'Тренд EMA 12/26', weight: 2,
-      score: diff > 0.001 ? 1 : diff < -0.001 ? -1 : 0,
-      note: diff > 0 ? 'быстрая выше медленной — рост' : 'быстрая ниже медленной — падение' });
+    add('Тренд EMA 12/26', diff > 0.001 ? 1 : diff < -0.001 ? -1 : 0, 2,
+        diff > 0 ? 'быстрая выше медленной — рост' : 'быстрая ниже медленной — падение');
   }
   if (ind.m.histogram[i] != null && ind.m.histogram[i - 1] != null) {
     const h = ind.m.histogram[i], rising = h > ind.m.histogram[i - 1];
@@ -248,7 +310,17 @@ function scoreAt(ind, i) {
   return { votes, total, max, verdict, pct };
 }
 
-// ---- Совет по сроку: сравниваем вердикты трёх таймфреймов ----
+// Серия вердиктов по истории — для меток на графике и спарклайна
+function scoreSeries(ind, from = 60) {
+  const out = [];
+  for (let i = from; i < ind.closes.length; i++) {
+    const s = scoreAt(ind, i);
+    out.push({ i, rel: s.max ? s.total / s.max : 0, verdict: s.verdict });
+  }
+  return out;
+}
+
+// ---- Совет по сроку ----
 function horizonAdvice(v1h, v6h, v1d) {
   if (v1d === 'buy' && v6h === 'buy')
     return { cls: 'buy', text: '📈 Сигналы совпадают на дневном и 6-часовом графиках — если покупать, то со средним горизонтом: 1–4 недели. Краткосрочные колебания можно пересидеть.' };
@@ -263,7 +335,7 @@ function horizonAdvice(v1h, v6h, v1d) {
   return { cls: 'wait', text: '⏸ Сигналы разных горизонтов противоречат друг другу — надёжного срока для покупки сейчас нет. Лучшее действие: ждать.' };
 }
 
-// ---- Бэктест: следуем сигналам советника по всей истории ----
+// ---- Бэктест ----
 function backtest(candles, ind) {
   const start = 60;
   if (candles.length < start + 20) return null;
@@ -289,7 +361,22 @@ function backtest(candles, ind) {
   };
 }
 
-// ---- Отрисовка (без изменений математики) ----
+// ---- Уровни поддержки/сопротивления: последние локальные экстремумы ----
+function swingLevels(candles, win = 5, keep = 2) {
+  const highs = [], lows = [];
+  for (let i = win; i < candles.length - win; i++) {
+    let isHigh = true, isLow = true;
+    for (let j = i - win; j <= i + win; j++) {
+      if (candles[j].high > candles[i].high) isHigh = false;
+      if (candles[j].low < candles[i].low) isLow = false;
+    }
+    if (isHigh) highs.push(candles[i].high);
+    if (isLow) lows.push(candles[i].low);
+  }
+  return { resistance: highs.slice(-keep), support: lows.slice(-keep) };
+}
+
+// ---- Отрисовка ----
 function setupCanvas(canvas) {
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth, h = parseInt(canvas.getAttribute('height'));
@@ -311,7 +398,7 @@ function drawLine(ctx, xs, ys, color, width = 1.5) {
   ctx.stroke();
 }
 
-function drawPrice(candles, ind) {
+function drawPrice(candles, ind, series) {
   const { ctx, w, h } = setupCanvas($('priceChart'));
   const pad = { l: 8, r: 56, t: 8, b: 8 };
   const n = candles.length;
@@ -330,6 +417,7 @@ function drawPrice(candles, ind) {
     ctx.strokeStyle = '#21262d'; ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(w - pad.r, yy); ctx.stroke();
     ctx.fillText(v >= 1000 ? v.toFixed(0) : v.toPrecision(5), w - pad.r + 4, yy);
   }
+  // канал Боллинджера
   ctx.beginPath();
   let started = false;
   for (let i = 0; i < n; i++) if (ind.bb.upper[i] != null) {
@@ -339,6 +427,20 @@ function drawPrice(candles, ind) {
   for (let i = n - 1; i >= 0; i--) if (ind.bb.lower[i] != null) ctx.lineTo(x(i), y(ind.bb.lower[i]));
   ctx.closePath(); ctx.fillStyle = 'rgba(88,166,255,0.07)'; ctx.fill();
 
+  // уровни поддержки/сопротивления
+  const lv = swingLevels(candles);
+  ctx.setLineDash([5, 5]); ctx.lineWidth = 1;
+  for (const p of lv.resistance) {
+    ctx.strokeStyle = 'rgba(248,81,73,0.55)';
+    ctx.beginPath(); ctx.moveTo(pad.l, y(p)); ctx.lineTo(w - pad.r, y(p)); ctx.stroke();
+  }
+  for (const p of lv.support) {
+    ctx.strokeStyle = 'rgba(63,185,80,0.55)';
+    ctx.beginPath(); ctx.moveTo(pad.l, y(p)); ctx.lineTo(w - pad.r, y(p)); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // свечи
   for (let i = 0; i < n; i++) {
     const c = candles[i];
     const up = c.close >= c.open;
@@ -354,6 +456,27 @@ function drawPrice(candles, ind) {
   drawLine(ctx, xs, ind.ema26.map(v => v != null ? y(v) : null), '#bc8cff');
   drawLine(ctx, xs, ind.bb.upper.map(v => v != null ? y(v) : null), 'rgba(88,166,255,0.5)', 1);
   drawLine(ctx, xs, ind.bb.lower.map(v => v != null ? y(v) : null), 'rgba(88,166,255,0.5)', 1);
+
+  // метки, где советник переключался на «покупать»/«продавать»
+  if (series) {
+    let prev = 'wait';
+    for (const s of series) {
+      if (s.verdict !== prev) {
+        if (s.verdict === 'buy') {
+          ctx.fillStyle = '#3fb950';
+          const cx = x(s.i), cy = y(candles[s.i].low) + 10;
+          ctx.beginPath(); ctx.moveTo(cx, cy - 5); ctx.lineTo(cx - 5, cy + 4); ctx.lineTo(cx + 5, cy + 4);
+          ctx.closePath(); ctx.fill();
+        } else if (s.verdict === 'sell') {
+          ctx.fillStyle = '#f85149';
+          const cx = x(s.i), cy = y(candles[s.i].high) - 10;
+          ctx.beginPath(); ctx.moveTo(cx, cy + 5); ctx.lineTo(cx - 5, cy - 4); ctx.lineTo(cx + 5, cy - 4);
+          ctx.closePath(); ctx.fill();
+        }
+        prev = s.verdict;
+      }
+    }
+  }
 }
 
 function drawRsi(candles, rsiArr) {
@@ -394,6 +517,22 @@ function drawMacd(candles, m) {
   drawLine(ctx, xs, m.signalLine.map(v => v != null ? y(v) : null), '#d29922');
 }
 
+function drawSpark(series) {
+  const { ctx, w, h } = setupCanvas($('sparkChart'));
+  if (!series.length) return;
+  const x = i => i * w / (series.length - 1 || 1);
+  const y = rel => h / 2 - rel * (h / 2 - 3);
+  ctx.strokeStyle = '#30363d'; ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
+  for (let i = 1; i < series.length; i++) {
+    ctx.strokeStyle = series[i].rel >= 0 ? '#3fb950' : '#f85149';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x(i - 1), y(series[i - 1].rel));
+    ctx.lineTo(x(i), y(series[i].rel));
+    ctx.stroke();
+  }
+}
+
 // ---- Форматирование ----
 const fmtPrice = v => v >= 1000
   ? v.toLocaleString('ru-RU', { maximumFractionDigits: 0 })
@@ -402,14 +541,31 @@ const fmtPct = v => (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
 const verdictWord = v => v === 'buy' ? '▲ покупать' : v === 'sell' ? '▼ продавать' : '● ждать';
 const verdictCls = v => v === 'buy' ? 'vote-buy' : v === 'sell' ? 'vote-sell' : 'vote-neutral';
 
-// ---- План сделки + калькулятор позиции ----
+// ---- Индекс страха и жадности ----
+const FNG_RU = {
+  'Extreme Fear': 'Экстремальный страх — рынок в панике, исторически часто близко ко дну',
+  'Fear': 'Страх — настроение осторожное',
+  'Neutral': 'Нейтрально',
+  'Greed': 'Жадность — рынок разогрет',
+  'Extreme Greed': 'Экстремальная жадность — перегрев, вершины часто рядом',
+};
+function renderFng() {
+  if (!state.fng) { $('fngValue').textContent = '—'; $('fngLabel').textContent = 'нет данных'; return; }
+  $('fngValue').textContent = state.fng.value;
+  $('fngValue').style.color = state.fng.value < 35 ? 'var(--red)' : state.fng.value > 65 ? 'var(--green)' : 'var(--yellow)';
+  $('fngMarker').style.left = state.fng.value + '%';
+  $('fngLabel').textContent = FNG_RU[state.fng.label] || state.fng.label;
+}
+
+// ---- План сделки ----
 function renderPlan(ind) {
   const i = ind.closes.length - 1;
   const a = ind.atr14[i];
   if (a == null) { $('planGrid').innerHTML = '<span class="muted">мало данных для ATR</span>'; return; }
+  const [stopMult, tgtMult] = PLAN_STYLES[$('planStyle').value] || PLAN_STYLES.std;
   const entry = ind.closes[i];
-  const stop = entry - 1.5 * a;
-  const target = entry + 2.5 * a;
+  const stop = entry - stopMult * a;
+  const target = entry + tgtMult * a;
   $('planGrid').innerHTML =
     `<b>Вход:</b><span>${fmtPrice(entry)} $</span>` +
     `<b class="bad">Стоп-лосс:</b><span>${fmtPrice(stop)} $ (${fmtPct((stop / entry - 1) * 100)})</span>` +
@@ -427,6 +583,94 @@ function renderPlan(ind) {
     : '<span class="muted">Введите депозит, чтобы рассчитать размер позиции.</span>';
 }
 
+// ---- Журнал сделок (бумажная торговля) ----
+function getJournal() {
+  try { return JSON.parse(localStorage.getItem('journal')) || { open: [], closed: [] }; }
+  catch { return { open: [], closed: [] }; }
+}
+function saveJournal(j) { localStorage.setItem('journal', JSON.stringify(j)); }
+function priceOf(pair) { return state.prices[pair] || null; }
+
+function renderJournal() {
+  const j = getJournal();
+  $('openTradeBtn').textContent = `Купить ${state.pair || ''} (виртуально)`;
+
+  $('openTrades').innerHTML = j.open.length
+    ? '<div class="muted" style="padding:4px 0">Открытые позиции:</div>' + j.open.map((t, idx) => {
+        const cur = priceOf(t.pair);
+        const pnl = cur ? t.usd * (cur / t.entry - 1) : null;
+        const pnlTxt = pnl == null ? '' :
+          ` <span class="${pnl >= 0 ? 'good' : 'bad'}">${fmtPct(pnl / t.usd * 100)} (${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} $)</span>`;
+        return `<div class="row"><span>${t.pair} · ${t.usd} $ @ ${fmtPrice(t.entry)}${pnlTxt}</span>` +
+               `<button class="small" data-close="${idx}">Закрыть</button></div>`;
+      }).join('')
+    : '<div class="muted" style="padding:4px 0">Открытых позиций нет.</div>';
+
+  const recent = j.closed.slice(-5).reverse();
+  $('closedTrades').innerHTML = recent.length
+    ? '<div class="muted" style="padding:4px 0">Последние закрытые:</div>' + recent.map(t =>
+        `<div class="row"><span>${t.pair} · ${t.usd} $ @ ${fmtPrice(t.entry)} → ${fmtPrice(t.exit)}</span>` +
+        `<span class="${t.pnl >= 0 ? 'good' : 'bad'}">${t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)} $</span></div>`).join('')
+    : '';
+
+  const totalPnl = j.closed.reduce((s, t) => s + t.pnl, 0);
+  const wins = j.closed.filter(t => t.pnl > 0).length;
+  $('journalTotal').innerHTML = j.closed.length
+    ? `Итог по ${j.closed.length} закрытым: <b class="${totalPnl >= 0 ? 'good' : 'bad'}">${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)} $</b> · прибыльных ${wins}/${j.closed.length}`
+    : '';
+
+  document.querySelectorAll('[data-close]').forEach(btn => btn.addEventListener('click', () => {
+    const idx = parseInt(btn.dataset.close);
+    const jj = getJournal();
+    const t = jj.open[idx];
+    const cur = priceOf(t.pair);
+    if (!cur) return;
+    jj.open.splice(idx, 1);
+    jj.closed.push({ ...t, exit: cur, pnl: t.usd * (cur / t.entry - 1), closedAt: Date.now() });
+    saveJournal(jj);
+    renderJournal();
+  }));
+}
+
+$('openTradeBtn').addEventListener('click', () => {
+  const usd = Math.max(1, parseFloat($('tradeUsd').value) || 0);
+  const cur = priceOf(state.pair);
+  if (!cur) return;
+  const j = getJournal();
+  j.open.push({ pair: state.pair, entry: cur, usd, openedAt: Date.now() });
+  saveJournal(j);
+  renderJournal();
+});
+
+// ---- Уведомления о сильных сигналах ----
+$('notifyChk').checked = localStorage.getItem('notify') === '1';
+$('notifyChk').addEventListener('change', () => {
+  localStorage.setItem('notify', $('notifyChk').checked ? '1' : '0');
+  if ($('notifyChk').checked && 'Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+});
+function maybeNotify() {
+  if (!$('notifyChk').checked || !('Notification' in window) || Notification.permission !== 'granted') return;
+  for (const s of state.scan) {
+    if (s.verdict !== 'wait' && s.pct >= 50 && state.notified[s.pair] !== s.verdict) {
+      new Notification(`${s.pair}: ${s.verdict === 'buy' ? '▲ ПОКУПАТЬ' : '▼ ПРОДАВАТЬ'} (${s.pct}%)`,
+        { body: `Цена ${fmtPrice(s.price)} $ — сигнал на дневном графике` });
+      state.notified[s.pair] = s.verdict;
+    }
+  }
+}
+
+// ---- Поделиться сигналом ----
+$('shareBtn').addEventListener('click', async () => {
+  const cur = state.byTf[parseInt($('tf').value)];
+  if (!cur) return;
+  const res = scoreAt(cur.ind, cur.ind.closes.length - 1);
+  const text = `${state.pair}: ${verdictWord(res.verdict).toUpperCase()} (согласованность ${res.pct}%), цена ${fmtPrice(cur.ind.closes.at(-1))} $ — Крипто-советник ${location.href}`;
+  if (navigator.share) { try { await navigator.share({ text }); } catch {} }
+  else { await navigator.clipboard.writeText(text); $('shareBtn').textContent = '✓ Скопировано'; setTimeout(() => $('shareBtn').textContent = '📤 Поделиться сигналом', 1500); }
+});
+
 function render() {
   const tfSel = parseInt($('tf').value);
   const cur = state.byTf[tfSel];
@@ -436,6 +680,7 @@ function render() {
   $('content').style.display = 'grid';
 
   const res = scoreAt(ind, ind.closes.length - 1);
+  const series = scoreSeries(ind);
   const last = candles[candles.length - 1];
   $('pairLabel').textContent = state.pair;
   $('lastPrice').textContent = fmtPrice(last.close) + ' $';
@@ -454,7 +699,7 @@ function render() {
     return `<div class="row"><span>${vt.name}<br><span class="muted">${vt.note}</span></span><span class="${cls}">${arrow}</span></div>`;
   }).join('');
 
-  // Мульти-таймфрейм: вердикты трёх горизонтов + совет по сроку
+  // Мульти-таймфрейм
   const verdicts = {};
   $('tfRows').innerHTML = TFS.map(tf => {
     const d = state.byTf[tf.g];
@@ -471,9 +716,22 @@ function render() {
   adviceBox.textContent = ha.text;
   adviceBox.style.borderColor = ha.cls === 'buy' ? 'var(--green)' : ha.cls === 'sell' ? 'var(--red)' : 'var(--border)';
 
-  renderPlan(ind);
+  // Сканер
+  $('scanRows').innerHTML = state.scan.map(s =>
+    `<div class="row click" data-pair="${s.pair}"><span>${s.pair.replace('-USD', '')}<br>` +
+    `<span class="muted">${fmtPrice(s.price)} $</span></span>` +
+    `<span class="${verdictCls(s.verdict)}">${verdictWord(s.verdict)} (${s.pct}%)</span></div>`).join('') ||
+    '<span class="muted">Загрузка…</span>';
+  document.querySelectorAll('#scanRows .click').forEach(row => row.addEventListener('click', () => {
+    $('pair').value = row.dataset.pair;
+    refresh();
+  }));
 
-  // Бэктест на выбранном таймфрейме
+  renderFng();
+  renderPlan(ind);
+  renderJournal();
+  maybeNotify();
+
   const bt = backtest(candles, ind);
   $('backtestBody').innerHTML = bt ? (
     `<div class="stat-line">Период: последние <b>${bt.days}</b> дней, сделок: <b>${bt.trades}</b>, прибыльных: <b>${bt.winRate}%</b></div>` +
@@ -484,28 +742,55 @@ function render() {
       : '<div class="stat-line muted">На этом отрезке сигналы сработали лучше удержания, но это не гарантия на будущее.</div>')
   ) : '<span class="muted">Недостаточно истории для проверки.</span>';
 
-  drawPrice(candles, ind);
+  drawPrice(candles, ind, series);
   drawRsi(candles, ind.rsi14);
   drawMacd(candles, ind.m);
+  drawSpark(series);
   $('updated').textContent = 'Обновлено: ' + new Date().toLocaleTimeString('ru-RU');
 }
 
 async function refresh() {
   const pair = $('pair').value;
+  localStorage.setItem('pair', pair);
   $('status').style.display = 'block';
   $('status').className = 'card';
   $('status').textContent = 'Загрузка данных…';
   try {
-    const results = await Promise.all(TFS.map(tf =>
-      fetchCandles(pair, tf.g).then(candles => ({ g: tf.g, candles })).catch(() => null)
-    ));
+    const jobs = [
+      ...TFS.map(tf => fetchCandles(pair, tf.g).then(candles => ({ kind: 'tf', g: tf.g, candles })).catch(() => null)),
+      ...PAIRS.filter(p => p !== pair).map(p =>
+        fetchCandles(p, 86400).then(candles => ({ kind: 'scan', pair: p, candles })).catch(() => null)),
+      fetchFng().then(fng => ({ kind: 'fng', fng })).catch(() => null),
+    ];
+    const results = await Promise.all(jobs);
+
     state.pair = pair;
     state.byTf = {};
+    const scan = [];
     for (const r of results) {
-      if (r && r.candles.length >= 30) {
+      if (!r) continue;
+      if (r.kind === 'tf' && r.candles.length >= 30) {
         state.byTf[r.g] = { candles: r.candles, ind: computeIndicators(r.candles) };
+      } else if (r.kind === 'scan' && r.candles.length >= 30) {
+        const ind = computeIndicators(r.candles);
+        const s = scoreAt(ind, ind.closes.length - 1);
+        const price = ind.closes.at(-1);
+        scan.push({ pair: r.pair, price, verdict: s.verdict, pct: s.pct });
+        state.prices[r.pair] = price;
+      } else if (r.kind === 'fng') {
+        state.fng = r.fng;
       }
     }
+    // выбранная пара — в сканер из уже загруженных дневных данных
+    if (state.byTf[86400]) {
+      const ind = state.byTf[86400].ind;
+      const s = scoreAt(ind, ind.closes.length - 1);
+      const price = ind.closes.at(-1);
+      scan.unshift({ pair, price, verdict: s.verdict, pct: s.pct });
+      state.prices[pair] = price;
+    }
+    state.scan = scan;
+
     if (!state.byTf[parseInt($('tf').value)]) throw new Error('нет данных по выбранному таймфрейму');
     render();
   } catch (e) {
@@ -516,22 +801,32 @@ async function refresh() {
   }
 }
 
-// Депозит запоминается между визитами
+// ---- Настройки, которые страница помнит ----
+if (localStorage.getItem('pair') && PAIRS.includes(localStorage.getItem('pair'))) {
+  $('pair').value = localStorage.getItem('pair');
+}
 $('deposit').value = localStorage.getItem('deposit') || 1000;
-$('deposit').addEventListener('input', () => {
+$('planStyle').value = localStorage.getItem('planStyle') || 'std';
+const replan = () => {
   localStorage.setItem('deposit', $('deposit').value);
+  localStorage.setItem('planStyle', $('planStyle').value);
   const cur = state.byTf[parseInt($('tf').value)];
   if (cur) renderPlan(cur.ind);
-});
-$('riskPct').addEventListener('change', () => {
-  const cur = state.byTf[parseInt($('tf').value)];
-  if (cur) renderPlan(cur.ind);
-});
+};
+$('deposit').addEventListener('input', replan);
+$('riskPct').addEventListener('change', replan);
+$('planStyle').addEventListener('change', replan);
 
 $('refresh').addEventListener('click', refresh);
 $('pair').addEventListener('change', refresh);
-$('tf').addEventListener('change', render);          // смена таймфрейма — без перезагрузки, данные уже есть
-window.addEventListener('resize', () => render());   // поворот экрана — просто перерисовать
+$('tf').addEventListener('change', render);          // смена таймфрейма — данные уже загружены
+
+// Перерисовка только при реальном изменении ширины (iOS шлёт resize при скролле)
+let lastW = window.innerWidth;
+window.addEventListener('resize', () => {
+  if (window.innerWidth !== lastW) { lastW = window.innerWidth; render(); }
+});
+
 refresh();
 setInterval(refresh, 60000); // автообновление раз в минуту
 </script>
