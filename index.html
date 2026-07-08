@@ -126,12 +126,30 @@ const COINS = [
 const state = { coins: {}, fng: null, notified: {} };
 
 // ---------- Данные ----------
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Бесплатный API часто отвечает 429 — пробуем до 3 раз, при неудаче берём кэш
 async function fetchHistory(id) {
   const url = `https://api.coingecko.com/api/v3/coins/${id}/market_chart?vs_currency=rub&days=365&interval=daily`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error('CoinGecko ' + res.status);
-  const j = await res.json();
-  return j.prices.map(p => p[1]); // дневные цены в рублях, последняя — текущая
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        const j = await res.json();
+        const prices = j.prices.map(p => p[1]); // дневные цены в рублях, последняя — текущая
+        if (prices.length >= 200) {
+          localStorage.setItem('cache:' + id, JSON.stringify({ ts: Date.now(), prices }));
+          return { prices, cachedAt: null };
+        }
+      }
+    } catch {}
+    await sleep(1500 * (attempt + 1));
+  }
+  try {
+    const c = JSON.parse(localStorage.getItem('cache:' + id));
+    if (c && c.prices && c.prices.length >= 200) return { prices: c.prices, cachedAt: c.ts };
+  } catch {}
+  return null;
 }
 async function fetchFng() {
   try {
@@ -238,7 +256,7 @@ function sparkline(canvas, prices) {
   ctx.stroke();
 }
 
-function coinCard(coin, a, advice) {
+function coinCard(coin, a, advice, cachedAt) {
   const buyRub = Math.min(
     Math.max(100, Math.round((a.verdict === 'strongbuy' ? 1 : 0.5) * maxBuy() / 100) * 100),
     maxBuy()
@@ -289,7 +307,8 @@ function coinCard(coin, a, advice) {
     <div class="reason">${reason}</div>
     ${action}
     <canvas class="spark" data-spark="${coin.sym}"></canvas>
-    <div class="muted">Цена за 3 месяца · скидка от максимума года: ${a.discount.toFixed(0)}%</div>
+    <div class="muted">Цена за 3 месяца · скидка от максимума года: ${a.discount.toFixed(0)}%${
+      cachedAt ? ` · ⚠️ данные от ${new Date(cachedAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}, обновятся автоматически` : ''}</div>
   </div>`;
 }
 
@@ -297,12 +316,20 @@ function renderPortfolio() {
   const pf = getPf();
   const rows = [];
   let totInvested = 0, totValue = 0, totRealized = 0, hasAny = false;
+  let priceMissing = false;
   for (const coin of COINS) {
     const h = pf[coin.sym];
     if (!h || (!h.units && !h.realized && !(h.history || []).length)) continue;
     hasAny = true;
     const cur = state.coins[coin.sym] ? state.coins[coin.sym].analysis.cur : null;
-    const value = cur != null ? h.units * cur : 0;
+    if (cur == null) {
+      // цены нет — честно говорим об этом и не считаем позицию нулём
+      priceMissing = true;
+      rows.push(`<div class="row"><span>${coin.emoji} ${coin.sym}: вложено ${fmtRub(h.invested)}</span>
+        <span class="muted">цена недоступна</span></div>`);
+      continue;
+    }
+    const value = h.units * cur;
     totInvested += h.invested; totValue += value; totRealized += h.realized;
     const pnl = value - h.invested;
     rows.push(`<div class="row"><span>${coin.emoji} ${coin.sym}: вложено ${fmtRub(h.invested)}</span>
@@ -313,8 +340,13 @@ function renderPortfolio() {
     return;
   }
   const totPnl = totValue - totInvested;
-  rows.push(`<div class="row"><span class="big">Итого</span>
-    <span class="big ${totPnl >= 0 ? 'good' : 'bad'}">${totPnl >= 0 ? '+' : ''}${fmtRub(totPnl).replace(' ₽', '')} ₽</span></div>`);
+  if (totInvested > 0) {
+    rows.push(`<div class="row"><span class="big">Итого</span>
+      <span class="big ${totPnl >= 0 ? 'good' : 'bad'}">${totPnl >= 0 ? '+' : ''}${fmtRub(totPnl).replace(' ₽', '')} ₽</span></div>`);
+  }
+  if (priceMissing) {
+    rows.push('<div class="row"><span class="muted">Часть цен не загрузилась — итог посчитан без них. Обнови страницу чуть позже.</span></div>');
+  }
   if (totRealized) {
     rows.push(`<div class="row"><span>Зафиксированная прибыль</span>
       <span class="${totRealized >= 0 ? 'good' : 'bad'}">${totRealized >= 0 ? '+' : ''}${fmtRub(totRealized)}</span></div>`);
@@ -336,9 +368,15 @@ function render() {
     const c = state.coins[coin.sym];
     if (!c) continue;
     const advice = sellAdvice(c.analysis, getPf()[coin.sym], state.fng);
-    html.push(coinCard(coin, c.analysis, advice));
+    html.push(coinCard(coin, c.analysis, advice, c.cachedAt));
   }
-  $('signals').innerHTML = html.join('') || '<div class="card error">Не удалось загрузить данные. Потяни страницу вниз, чтобы обновить.</div>';
+  $('signals').innerHTML = html.join('') ||
+    '<div class="card"><div class="error">Сервис цен сейчас перегружен (бесплатный лимит запросов).</div>' +
+    '<div class="muted" style="margin-top:8px">Твои покупки в безопасности — они хранятся в телефоне. ' +
+    'Через минуту-две страница обновится сама, или нажми кнопку ниже.</div>' +
+    '<div class="actions"><button class="primary" id="retryBtn">Попробовать сейчас</button></div></div>';
+  const rb = $('retryBtn');
+  if (rb) rb.addEventListener('click', refresh);
 
   for (const coin of COINS) {
     const c = state.coins[coin.sym];
@@ -397,11 +435,19 @@ async function refresh() {
     ]);
     state.fng = fng;
     COINS.forEach((coin, i) => {
-      if (hist[i] && hist[i].length >= 200) {
-        state.coins[coin.sym] = { prices: hist[i], analysis: analyseCoin(hist[i], fng) };
+      if (hist[i]) {
+        state.coins[coin.sym] = {
+          prices: hist[i].prices,
+          cachedAt: hist[i].cachedAt,
+          analysis: analyseCoin(hist[i].prices, fng),
+        };
       }
     });
     render();
+    // если ничего не загрузилось — попробовать снова через полторы минуты
+    if (!Object.keys(state.coins).length && !state.retryTimer) {
+      state.retryTimer = setTimeout(() => { state.retryTimer = null; refresh(); }, 90000);
+    }
   } catch (e) {
     $('updated').innerHTML = '<span class="error">Ошибка загрузки: ' + e.message + '</span>';
   }
