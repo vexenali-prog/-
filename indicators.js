@@ -182,6 +182,42 @@ function obv(closes, volumes) {
   return out;
 }
 
+/**
+ * Average True Range (Wilder's smoothing). Needs highs/lows/closes.
+ * @param {number[]} highs
+ * @param {number[]} lows
+ * @param {number[]} closes
+ * @param {number} period
+ * @returns {(number|null)[]}
+ */
+function atr(highs, lows, closes, period = 14) {
+  assertArray(highs, 'highs');
+  assertArray(lows, 'lows');
+  assertArray(closes, 'closes');
+  if (highs.length !== lows.length || highs.length !== closes.length) {
+    throw new RangeError('atr: highs, lows and closes must be the same length');
+  }
+  const n = closes.length;
+  const out = new Array(n).fill(null);
+  if (period <= 0 || n <= period) return out;
+
+  const tr = new Array(n).fill(0);
+  for (let i = 1; i < n; i++) {
+    tr[i] = Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i] - closes[i - 1]),
+      Math.abs(lows[i] - closes[i - 1])
+    );
+  }
+  let seed = 0;
+  for (let i = 1; i <= period; i++) seed += tr[i];
+  out[period] = seed / period;
+  for (let i = period + 1; i < n; i++) {
+    out[i] = (out[i - 1] * (period - 1) + tr[i]) / period;
+  }
+  return out;
+}
+
 // ---------------- Sanity checks ----------------
 
 let passed = 0, failed = 0;
@@ -263,9 +299,29 @@ check('OBV throws on mismatched closes/volumes length', (() => {
   catch (e) { return true; }
 })());
 
+// 13. ATR on a constant-range series converges to that range
+check('ATR on constant-range candles equals the bar range', (() => {
+  const n = 40;
+  const highs = new Array(n).fill(105), lows = new Array(n).fill(95), closes = new Array(n).fill(100);
+  const a = atr(highs, lows, closes, 14);
+  return approxEqual(a.at(-1), 10);
+})());
+
+// 14. ATR: too-short series returns nulls, correct length
+check('ATR on short series returns all nulls', (() => {
+  const a = atr([1, 2], [0, 1], [1, 2], 14);
+  return a.length === 2 && a.every(v => v === null);
+})());
+
+// 15. ATR refuses mismatched input lengths
+check('ATR throws on mismatched input lengths', (() => {
+  try { atr([1, 2, 3], [1, 2], [1, 2, 3], 2); return false; }
+  catch (e) { return true; }
+})());
+
 console.log(`\n${passed}/${passed + failed} checks passed.`);
 if (failed > 0) console.log('Fix the failing checks before porting this into the React artifact.');
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { sma, ema, rsi, macd, bollinger, obv };
+  module.exports = { sma, ema, rsi, macd, bollinger, obv, atr };
 }

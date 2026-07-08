@@ -35,16 +35,18 @@
     border: 1px solid var(--border); border-radius: 6px;
     padding: 8px 12px; font-size: 14px;
   }
+  input[type=number] { width: 110px; }
   button { cursor: pointer; }
   button:hover { border-color: var(--blue); }
   button.primary { background: #1f6feb; border-color: #1f6feb; }
   .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
-  @media (min-width: 800px) { .grid.two { grid-template-columns: 320px 1fr; } }
+  @media (min-width: 800px) { .grid.two { grid-template-columns: 340px 1fr; } }
   .card {
     background: var(--panel); border: 1px solid var(--border);
-    border-radius: 10px; padding: 16px;
+    border-radius: 10px; padding: 16px; margin-bottom: 16px;
   }
-  .verdict { font-size: 32px; font-weight: 700; margin: 8px 0; }
+  .card h2 { font-size: 14px; margin-bottom: 10px; color: var(--blue); }
+  .verdict { font-size: 30px; font-weight: 700; margin: 8px 0; }
   .verdict.buy { color: var(--green); }
   .verdict.sell { color: var(--red); }
   .verdict.wait { color: var(--yellow); }
@@ -54,8 +56,8 @@
   .confbar > div { height: 100%; border-radius: 5px; transition: width .4s; }
   .rows { margin-top: 12px; font-size: 13px; }
   .row {
-    display: flex; justify-content: space-between; padding: 6px 0;
-    border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; gap: 8px; padding: 6px 0;
+    border-bottom: 1px solid var(--border); align-items: center;
   }
   .row:last-child { border-bottom: none; }
   .vote-buy { color: var(--green); }
@@ -64,8 +66,17 @@
   canvas { width: 100%; display: block; }
   .chart-title { font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
   .price-big { font-size: 24px; font-weight: 600; }
+  .horizon-advice {
+    margin-top: 10px; padding: 10px; border-radius: 8px; font-size: 14px;
+    background: rgba(88,166,255,0.08); border: 1px solid var(--border); line-height: 1.45;
+  }
+  .plan-grid { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 14px; margin-top: 6px; }
+  .plan-grid b { text-align: right; }
+  .inputs-line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; font-size: 13px; }
+  .stat-line { font-size: 14px; margin: 4px 0; }
+  .good { color: var(--green); } .bad { color: var(--red); }
   .disclaimer {
-    margin-top: 16px; padding: 12px; border: 1px solid var(--yellow);
+    padding: 12px; border: 1px solid var(--yellow);
     border-radius: 8px; color: var(--yellow); font-size: 13px; line-height: 1.5;
   }
   .error { color: var(--red); padding: 12px; }
@@ -74,7 +85,7 @@
 </head>
 <body>
   <h1>📈 Крипто-советник</h1>
-  <div class="sub">Живые котировки Coinbase · SMA · EMA · RSI · MACD · Полосы Боллинджера · OBV</div>
+  <div class="sub">Живые котировки Coinbase · SMA · EMA · RSI · MACD · Полосы Боллинджера · OBV · ATR</div>
 
   <div class="controls">
     <select id="pair">
@@ -86,9 +97,9 @@
       <option value="ADA-USD">ADA / USD</option>
     </select>
     <select id="tf">
-      <option value="3600">1 час</option>
-      <option value="21600">6 часов</option>
-      <option value="86400" selected>1 день</option>
+      <option value="3600">График: 1 час</option>
+      <option value="21600">График: 6 часов</option>
+      <option value="86400" selected>График: 1 день</option>
     </select>
     <button class="primary" id="refresh">Обновить</button>
     <span class="muted" id="updated"></span>
@@ -104,6 +115,37 @@
         <div class="confbar"><div id="confFill"></div></div>
         <div class="rows" id="voteRows"></div>
       </div>
+
+      <div class="card">
+        <h2>⏱ На какой срок?</h2>
+        <div class="rows" id="tfRows"></div>
+        <div class="horizon-advice" id="horizonAdvice"></div>
+      </div>
+
+      <div class="card">
+        <h2>🎯 План сделки (на случай покупки)</h2>
+        <div class="plan-grid" id="planGrid"></div>
+        <div class="inputs-line">
+          Депозит $ <input type="number" id="deposit" min="10" step="10">
+          Риск
+          <select id="riskPct">
+            <option value="1">1%</option>
+            <option value="2" selected>2%</option>
+            <option value="5">5%</option>
+          </select>
+        </div>
+        <div class="stat-line" id="posSize"></div>
+        <div class="muted" style="margin-top:6px">Стоп-лосс = вход − 1.5×ATR, цель = вход + 2.5×ATR.
+        Риск — доля депозита, которую вы потеряете, если сработает стоп.</div>
+      </div>
+
+      <div class="card">
+        <h2>🧪 Проверка советника на истории</h2>
+        <div id="backtestBody"></div>
+        <div class="muted" style="margin-top:6px">Стратегия: покупка при сигнале «покупать»,
+        продажа, когда сигнал гаснет. Комиссия 0.1% за сделку учтена. Прошлое ≠ будущее.</div>
+      </div>
+
       <div class="disclaimer">
         ⚠️ Это <b>не</b> вероятность прибыли и не финансовый совет. Процент показывает,
         насколько технические индикаторы согласны между собой прямо сейчас. Индикаторы
@@ -125,6 +167,12 @@
 <script src="indicators.js"></script>
 <script>
 const $ = id => document.getElementById(id);
+const TFS = [
+  { g: 3600,  label: '1 час',   horizon: 'часы — 1-2 дня' },
+  { g: 21600, label: '6 часов', horizon: 'дни — неделя' },
+  { g: 86400, label: '1 день',  horizon: 'недели — месяцы' },
+];
+const state = { byTf: {}, pair: null };
 
 async function fetchCandles(pair, granularity) {
   const url = `https://api.exchange.coinbase.com/products/${pair}/candles?granularity=${granularity}`;
@@ -136,68 +184,112 @@ async function fetchCandles(pair, granularity) {
   return raw.map(c => ({ time: c[0], low: c[1], high: c[2], open: c[3], close: c[4], volume: c[5] }));
 }
 
-// ---- Оценка сигналов: каждый индикатор голосует со своим весом ----
-function analyse(candles) {
+// ---- Индикаторы по всей серии ----
+function computeIndicators(candles) {
   const closes = candles.map(c => c.close);
+  const highs = candles.map(c => c.high);
+  const lows = candles.map(c => c.low);
   const volumes = candles.map(c => c.volume);
-  const i = closes.length - 1;
+  return {
+    closes, highs, lows, volumes,
+    ema12: ema(closes, 12), ema26: ema(closes, 26),
+    sma20: sma(closes, 20), sma50: sma(closes, 50),
+    rsi14: rsi(closes, 14), m: macd(closes, 12, 26, 9),
+    bb: bollinger(closes, 20, 2), obvArr: obv(closes, volumes),
+    atr14: atr(highs, lows, closes, 14),
+  };
+}
 
-  const ema12 = ema(closes, 12), ema26 = ema(closes, 26);
-  const sma20 = sma(closes, 20), sma50 = sma(closes, 50);
-  const rsi14 = rsi(closes, 14);
-  const m = macd(closes, 12, 26, 9);
-  const bb = bollinger(closes, 20, 2);
-  const obvArr = obv(closes, volumes);
-
-  const votes = []; // {name, score, weight, note}
+// ---- Голоса индикаторов в точке i (используется и для «сейчас», и для бэктеста) ----
+function votesAt(ind, i) {
+  const votes = [];
   const add = (name, score, weight, note) => votes.push({ name, score, weight, note });
+  const c = ind.closes[i];
 
-  // Тренд: быстрая EMA против медленной
-  if (ema12[i] != null && ema26[i] != null) {
-    const diff = (ema12[i] - ema26[i]) / closes[i];
-    add('Тренд EMA 12/26', diff > 0.001 ? 1 : diff < -0.001 ? -1 : 0, 2,
-        diff > 0 ? 'быстрая выше медленной — рост' : 'быстрая ниже медленной — падение');
+  if (ind.ema12[i] != null && ind.ema26[i] != null) {
+    const diff = (ind.ema12[i] - ind.ema26[i]) / c;
+    votes.push({ name: 'Тренд EMA 12/26', weight: 2,
+      score: diff > 0.001 ? 1 : diff < -0.001 ? -1 : 0,
+      note: diff > 0 ? 'быстрая выше медленной — рост' : 'быстрая ниже медленной — падение' });
   }
-  // MACD: знак гистограммы + направление
-  if (m.histogram[i] != null && m.histogram[i - 1] != null) {
-    const h = m.histogram[i], rising = h > m.histogram[i - 1];
+  if (ind.m.histogram[i] != null && ind.m.histogram[i - 1] != null) {
+    const h = ind.m.histogram[i], rising = h > ind.m.histogram[i - 1];
     add('MACD', h > 0 ? (rising ? 1 : 0.5) : (rising ? -0.5 : -1), 2,
         `гистограмма ${h > 0 ? 'выше' : 'ниже'} нуля, ${rising ? 'растёт' : 'падает'}`);
   }
-  // RSI: зоны перекупленности/перепроданности
-  if (rsi14[i] != null) {
-    const r = rsi14[i];
+  if (ind.rsi14[i] != null) {
+    const r = ind.rsi14[i];
     const s = r < 30 ? 1 : r < 45 ? 0.5 : r > 70 ? -1 : r > 55 ? -0.5 : 0;
     add('RSI(14)', s, 2, `${r.toFixed(1)} — ${r < 30 ? 'перепродан' : r > 70 ? 'перекуплен' : 'нейтрально'}`);
   }
-  // Боллинджер: положение цены в канале
-  if (bb.upper[i] != null) {
-    const c = closes[i];
-    const s = c < bb.lower[i] ? 1 : c > bb.upper[i] ? -1 : 0;
+  if (ind.bb.upper[i] != null) {
+    const s = c < ind.bb.lower[i] ? 1 : c > ind.bb.upper[i] ? -1 : 0;
     add('Боллинджер', s, 1.5,
-        c < bb.lower[i] ? 'цена ниже нижней полосы' : c > bb.upper[i] ? 'цена выше верхней полосы' : 'цена внутри канала');
+        c < ind.bb.lower[i] ? 'цена ниже нижней полосы' : c > ind.bb.upper[i] ? 'цена выше верхней полосы' : 'цена внутри канала');
   }
-  // OBV: объём подтверждает движение?
-  if (obvArr.length > 10) {
-    const slope = obvArr[i] - obvArr[i - 10];
+  if (i > 10) {
+    const slope = ind.obvArr[i] - ind.obvArr[i - 10];
     add('OBV (объём)', slope > 0 ? 1 : slope < 0 ? -1 : 0, 1,
         slope > 0 ? 'объём поддерживает рост' : 'объём поддерживает падение');
   }
-  // Долгий тренд: цена против SMA50
-  if (sma50[i] != null) {
-    add('Цена vs SMA50', closes[i] > sma50[i] ? 1 : -1, 1,
-        closes[i] > sma50[i] ? 'цена выше SMA50' : 'цена ниже SMA50');
+  if (ind.sma50[i] != null) {
+    add('Цена vs SMA50', c > ind.sma50[i] ? 1 : -1, 1,
+        c > ind.sma50[i] ? 'цена выше SMA50' : 'цена ниже SMA50');
   }
-
-  const total = votes.reduce((s, v) => s + v.score * v.weight, 0);
-  const maxTotal = votes.reduce((s, v) => s + v.weight, 0);
-  const pct = maxTotal ? Math.round(Math.abs(total) / maxTotal * 100) : 0;
-  const verdict = total > maxTotal * 0.2 ? 'buy' : total < -maxTotal * 0.2 ? 'sell' : 'wait';
-
-  return { votes, pct, verdict, indicators: { ema12, ema26, sma20, rsi14, m, bb } };
+  return votes;
 }
 
-// ---- Отрисовка ----
+function scoreAt(ind, i) {
+  const votes = votesAt(ind, i);
+  const total = votes.reduce((s, v) => s + v.score * v.weight, 0);
+  const max = votes.reduce((s, v) => s + v.weight, 0);
+  const verdict = max && total > max * 0.2 ? 'buy' : max && total < -max * 0.2 ? 'sell' : 'wait';
+  const pct = max ? Math.round(Math.abs(total) / max * 100) : 0;
+  return { votes, total, max, verdict, pct };
+}
+
+// ---- Совет по сроку: сравниваем вердикты трёх таймфреймов ----
+function horizonAdvice(v1h, v6h, v1d) {
+  if (v1d === 'buy' && v6h === 'buy')
+    return { cls: 'buy', text: '📈 Сигналы совпадают на дневном и 6-часовом графиках — если покупать, то со средним горизонтом: 1–4 недели. Краткосрочные колебания можно пересидеть.' };
+  if (v1d === 'sell' && v6h === 'sell')
+    return { cls: 'sell', text: '📉 Тренд вниз и на дневном, и на 6-часовом графике — покупать сейчас не стоит на любом сроке. Если держите монету, подумайте о защите позиции.' };
+  if (v6h === 'buy' && v1h === 'buy')
+    return { cls: 'buy', text: '⚡ Краткосрочные сигналы вверх, но дневной тренд не подтверждает. Подходит только короткая сделка на 1–5 дней с обязательным стоп-лоссом.' };
+  if (v1d === 'buy')
+    return { cls: 'wait', text: '🕰 Долгосрочный тренд вверх, но короткие сигналы против — возможно, сейчас откат. Либо покупка «в долгую» (недели-месяцы) частями, либо подождать согласования сигналов.' };
+  if (v1h === 'buy')
+    return { cls: 'wait', text: '⚠️ Рост виден только на часовом графике — это спекуляция внутри дня, а не инвестиция. Высокий риск, старшие тренды не поддерживают.' };
+  return { cls: 'wait', text: '⏸ Сигналы разных горизонтов противоречат друг другу — надёжного срока для покупки сейчас нет. Лучшее действие: ждать.' };
+}
+
+// ---- Бэктест: следуем сигналам советника по всей истории ----
+function backtest(candles, ind) {
+  const start = 60;
+  if (candles.length < start + 20) return null;
+  const fee = 0.001;
+  let entry = null, equity = 1, trades = 0, wins = 0;
+  for (let i = start; i < candles.length; i++) {
+    const { total, max } = scoreAt(ind, i);
+    const c = ind.closes[i];
+    const lastBar = i === candles.length - 1;
+    if (entry == null && !lastBar && total > max * 0.2) {
+      entry = c * (1 + fee);
+    } else if (entry != null && (total < 0 || lastBar)) {
+      const r = (c * (1 - fee)) / entry;
+      equity *= r; trades++; if (r > 1) wins++;
+      entry = null;
+    }
+  }
+  const bh = ind.closes[candles.length - 1] / ind.closes[start];
+  const days = Math.round((candles[candles.length - 1].time - candles[start].time) / 86400);
+  return {
+    trades, winRate: trades ? Math.round(wins / trades * 100) : 0,
+    stratPct: (equity - 1) * 100, bhPct: (bh - 1) * 100, days,
+  };
+}
+
+// ---- Отрисовка (без изменений математики) ----
 function setupCanvas(canvas) {
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth, h = parseInt(canvas.getAttribute('height'));
@@ -232,14 +324,12 @@ function drawPrice(candles, ind) {
   const y = v => pad.t + (max - v) / (max - min) * (h - pad.t - pad.b);
   const bw = Math.max(1, (w - pad.l - pad.r) / n * 0.6);
 
-  // сетка + подписи цен
   ctx.fillStyle = '#8b949e'; ctx.font = '11px sans-serif'; ctx.textBaseline = 'middle';
   for (let g = 0; g <= 4; g++) {
     const v = min + (max - min) * g / 4, yy = y(v);
     ctx.strokeStyle = '#21262d'; ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(w - pad.r, yy); ctx.stroke();
     ctx.fillText(v >= 1000 ? v.toFixed(0) : v.toPrecision(5), w - pad.r + 4, yy);
   }
-  // полосы Боллинджера — заливка канала
   ctx.beginPath();
   let started = false;
   for (let i = 0; i < n; i++) if (ind.bb.upper[i] != null) {
@@ -249,7 +339,6 @@ function drawPrice(candles, ind) {
   for (let i = n - 1; i >= 0; i--) if (ind.bb.lower[i] != null) ctx.lineTo(x(i), y(ind.bb.lower[i]));
   ctx.closePath(); ctx.fillStyle = 'rgba(88,166,255,0.07)'; ctx.fill();
 
-  // свечи
   for (let i = 0; i < n; i++) {
     const c = candles[i];
     const up = c.close >= c.open;
@@ -305,14 +394,51 @@ function drawMacd(candles, m) {
   drawLine(ctx, xs, m.signalLine.map(v => v != null ? y(v) : null), '#d29922');
 }
 
-function render(candles, res, pair) {
+// ---- Форматирование ----
+const fmtPrice = v => v >= 1000
+  ? v.toLocaleString('ru-RU', { maximumFractionDigits: 0 })
+  : v >= 1 ? v.toFixed(2) : v.toPrecision(4);
+const fmtPct = v => (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
+const verdictWord = v => v === 'buy' ? '▲ покупать' : v === 'sell' ? '▼ продавать' : '● ждать';
+const verdictCls = v => v === 'buy' ? 'vote-buy' : v === 'sell' ? 'vote-sell' : 'vote-neutral';
+
+// ---- План сделки + калькулятор позиции ----
+function renderPlan(ind) {
+  const i = ind.closes.length - 1;
+  const a = ind.atr14[i];
+  if (a == null) { $('planGrid').innerHTML = '<span class="muted">мало данных для ATR</span>'; return; }
+  const entry = ind.closes[i];
+  const stop = entry - 1.5 * a;
+  const target = entry + 2.5 * a;
+  $('planGrid').innerHTML =
+    `<b>Вход:</b><span>${fmtPrice(entry)} $</span>` +
+    `<b class="bad">Стоп-лосс:</b><span>${fmtPrice(stop)} $ (${fmtPct((stop / entry - 1) * 100)})</span>` +
+    `<b class="good">Цель:</b><span>${fmtPrice(target)} $ (${fmtPct((target / entry - 1) * 100)})</span>`;
+
+  const deposit = Math.max(0, parseFloat($('deposit').value) || 0);
+  const riskPct = parseFloat($('riskPct').value);
+  const riskAmount = deposit * riskPct / 100;
+  const stopDist = entry - stop;
+  let posValue = stopDist > 0 ? riskAmount / stopDist * entry : 0;
+  let note = '';
+  if (posValue > deposit) { posValue = deposit; note = ' (ограничено размером депозита)'; }
+  $('posSize').innerHTML = deposit > 0
+    ? `Размер позиции: <b>${posValue.toFixed(0)} $</b>${note} — при срабатывании стопа потеряете ≈ <b class="bad">${Math.min(riskAmount, posValue * stopDist / entry).toFixed(0)} $</b>`
+    : '<span class="muted">Введите депозит, чтобы рассчитать размер позиции.</span>';
+}
+
+function render() {
+  const tfSel = parseInt($('tf').value);
+  const cur = state.byTf[tfSel];
+  if (!cur) return;
+  const { candles, ind } = cur;
   $('status').style.display = 'none';
   $('content').style.display = 'grid';
+
+  const res = scoreAt(ind, ind.closes.length - 1);
   const last = candles[candles.length - 1];
-  $('pairLabel').textContent = pair;
-  $('lastPrice').textContent = last.close >= 1000
-    ? last.close.toLocaleString('ru-RU', { maximumFractionDigits: 0 }) + ' $'
-    : last.close + ' $';
+  $('pairLabel').textContent = state.pair;
+  $('lastPrice').textContent = fmtPrice(last.close) + ' $';
 
   const v = $('verdict');
   v.className = 'verdict ' + res.verdict;
@@ -328,22 +454,60 @@ function render(candles, res, pair) {
     return `<div class="row"><span>${vt.name}<br><span class="muted">${vt.note}</span></span><span class="${cls}">${arrow}</span></div>`;
   }).join('');
 
-  drawPrice(candles, res.indicators);
-  drawRsi(candles, res.indicators.rsi14);
-  drawMacd(candles, res.indicators.m);
+  // Мульти-таймфрейм: вердикты трёх горизонтов + совет по сроку
+  const verdicts = {};
+  $('tfRows').innerHTML = TFS.map(tf => {
+    const d = state.byTf[tf.g];
+    let word = '<span class="vote-neutral">нет данных</span>';
+    if (d) {
+      const s = scoreAt(d.ind, d.ind.closes.length - 1);
+      verdicts[tf.g] = s.verdict;
+      word = `<span class="${verdictCls(s.verdict)}">${verdictWord(s.verdict)} (${s.pct}%)</span>`;
+    }
+    return `<div class="row"><span>${tf.label}<br><span class="muted">горизонт: ${tf.horizon}</span></span>${word}</div>`;
+  }).join('');
+  const ha = horizonAdvice(verdicts[3600], verdicts[21600], verdicts[86400]);
+  const adviceBox = $('horizonAdvice');
+  adviceBox.textContent = ha.text;
+  adviceBox.style.borderColor = ha.cls === 'buy' ? 'var(--green)' : ha.cls === 'sell' ? 'var(--red)' : 'var(--border)';
+
+  renderPlan(ind);
+
+  // Бэктест на выбранном таймфрейме
+  const bt = backtest(candles, ind);
+  $('backtestBody').innerHTML = bt ? (
+    `<div class="stat-line">Период: последние <b>${bt.days}</b> дней, сделок: <b>${bt.trades}</b>, прибыльных: <b>${bt.winRate}%</b></div>` +
+    `<div class="stat-line">Стратегия по сигналам: <b class="${bt.stratPct >= 0 ? 'good' : 'bad'}">${fmtPct(bt.stratPct)}</b></div>` +
+    `<div class="stat-line">Просто «купил и держал»: <b class="${bt.bhPct >= 0 ? 'good' : 'bad'}">${fmtPct(bt.bhPct)}</b></div>` +
+    (bt.stratPct <= bt.bhPct
+      ? '<div class="stat-line muted">На этом отрезке сигналы не обогнали простое удержание — повод не переоценивать советник.</div>'
+      : '<div class="stat-line muted">На этом отрезке сигналы сработали лучше удержания, но это не гарантия на будущее.</div>')
+  ) : '<span class="muted">Недостаточно истории для проверки.</span>';
+
+  drawPrice(candles, ind);
+  drawRsi(candles, ind.rsi14);
+  drawMacd(candles, ind.m);
   $('updated').textContent = 'Обновлено: ' + new Date().toLocaleTimeString('ru-RU');
 }
 
 async function refresh() {
-  const pair = $('pair').value, tf = $('tf').value;
+  const pair = $('pair').value;
   $('status').style.display = 'block';
   $('status').className = 'card';
   $('status').textContent = 'Загрузка данных…';
   try {
-    const candles = await fetchCandles(pair, tf);
-    if (candles.length < 30) throw new Error('слишком мало данных');
-    const res = analyse(candles);
-    render(candles, res, pair);
+    const results = await Promise.all(TFS.map(tf =>
+      fetchCandles(pair, tf.g).then(candles => ({ g: tf.g, candles })).catch(() => null)
+    ));
+    state.pair = pair;
+    state.byTf = {};
+    for (const r of results) {
+      if (r && r.candles.length >= 30) {
+        state.byTf[r.g] = { candles: r.candles, ind: computeIndicators(r.candles) };
+      }
+    }
+    if (!state.byTf[parseInt($('tf').value)]) throw new Error('нет данных по выбранному таймфрейму');
+    render();
   } catch (e) {
     $('content').style.display = 'none';
     $('status').style.display = 'block';
@@ -352,10 +516,22 @@ async function refresh() {
   }
 }
 
+// Депозит запоминается между визитами
+$('deposit').value = localStorage.getItem('deposit') || 1000;
+$('deposit').addEventListener('input', () => {
+  localStorage.setItem('deposit', $('deposit').value);
+  const cur = state.byTf[parseInt($('tf').value)];
+  if (cur) renderPlan(cur.ind);
+});
+$('riskPct').addEventListener('change', () => {
+  const cur = state.byTf[parseInt($('tf').value)];
+  if (cur) renderPlan(cur.ind);
+});
+
 $('refresh').addEventListener('click', refresh);
 $('pair').addEventListener('change', refresh);
-$('tf').addEventListener('change', refresh);
-window.addEventListener('resize', () => refresh());
+$('tf').addEventListener('change', render);          // смена таймфрейма — без перезагрузки, данные уже есть
+window.addEventListener('resize', () => render());   // поворот экрана — просто перерисовать
 refresh();
 setInterval(refresh, 60000); // автообновление раз в минуту
 </script>
