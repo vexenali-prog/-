@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Крипто-советник — индикаторы и сигналы</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --blue: #58a6ff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 16px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+  .controls {
+    display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; align-items: center;
+  }
+  select, button, input {
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 12px; font-size: 14px;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--blue); }
+  button.primary { background: #1f6feb; border-color: #1f6feb; }
+  .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+  @media (min-width: 800px) { .grid.two { grid-template-columns: 320px 1fr; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px;
+  }
+  .verdict { font-size: 32px; font-weight: 700; margin: 8px 0; }
+  .verdict.buy { color: var(--green); }
+  .verdict.sell { color: var(--red); }
+  .verdict.wait { color: var(--yellow); }
+  .confbar {
+    height: 10px; background: var(--border); border-radius: 5px; overflow: hidden; margin: 8px 0;
+  }
+  .confbar > div { height: 100%; border-radius: 5px; transition: width .4s; }
+  .rows { margin-top: 12px; font-size: 13px; }
+  .row {
+    display: flex; justify-content: space-between; padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .row:last-child { border-bottom: none; }
+  .vote-buy { color: var(--green); }
+  .vote-sell { color: var(--red); }
+  .vote-neutral { color: var(--muted); }
+  canvas { width: 100%; display: block; }
+  .chart-title { font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+  .price-big { font-size: 24px; font-weight: 600; }
+  .disclaimer {
+    margin-top: 16px; padding: 12px; border: 1px solid var(--yellow);
+    border-radius: 8px; color: var(--yellow); font-size: 13px; line-height: 1.5;
+  }
+  .error { color: var(--red); padding: 12px; }
+  .muted { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1>📈 Крипто-советник</h1>
+  <div class="sub">Живые котировки Coinbase · SMA · EMA · RSI · MACD · Полосы Боллинджера · OBV</div>
+
+  <div class="controls">
+    <select id="pair">
+      <option value="BTC-USD">BTC / USD</option>
+      <option value="ETH-USD">ETH / USD</option>
+      <option value="SOL-USD">SOL / USD</option>
+      <option value="XRP-USD">XRP / USD</option>
+      <option value="DOGE-USD">DOGE / USD</option>
+      <option value="ADA-USD">ADA / USD</option>
+    </select>
+    <select id="tf">
+      <option value="3600">1 час</option>
+      <option value="21600">6 часов</option>
+      <option value="86400" selected>1 день</option>
+    </select>
+    <button class="primary" id="refresh">Обновить</button>
+    <span class="muted" id="updated"></span>
+  </div>
+
+  <div id="content" class="grid two" style="display:none">
+    <div>
+      <div class="card">
+        <div class="muted" id="pairLabel"></div>
+        <div class="price-big" id="lastPrice"></div>
+        <div class="verdict" id="verdict"></div>
+        <div>Согласованность индикаторов: <b id="confPct"></b></div>
+        <div class="confbar"><div id="confFill"></div></div>
+        <div class="rows" id="voteRows"></div>
+      </div>
+      <div class="disclaimer">
+        ⚠️ Это <b>не</b> вероятность прибыли и не финансовый совет. Процент показывает,
+        насколько технические индикаторы согласны между собой прямо сейчас. Индикаторы
+        описывают прошлое и регулярно ошибаются о будущем. Никогда не вкладывайте деньги,
+        которые не готовы потерять.
+      </div>
+    </div>
+    <div class="card">
+      <div class="chart-title">Цена + SMA20 + EMA12/26 + Полосы Боллинджера</div>
+      <canvas id="priceChart" height="380"></canvas>
+      <div class="chart-title">RSI (14) — выше 70 перекуплен, ниже 30 перепродан</div>
+      <canvas id="rsiChart" height="110"></canvas>
+      <div class="chart-title">MACD (12, 26, 9)</div>
+      <canvas id="macdChart" height="130"></canvas>
+    </div>
+  </div>
+  <div id="status" class="card">Загрузка данных…</div>
+
+<script src="indicators.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+
+async function fetchCandles(pair, granularity) {
+  const url = `https://api.exchange.coinbase.com/products/${pair}/candles?granularity=${granularity}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Coinbase API: ${res.status}`);
+  const raw = await res.json();
+  // Coinbase: [time, low, high, open, close, volume], новейшие первыми — разворачиваем
+  raw.sort((a, b) => a[0] - b[0]);
+  return raw.map(c => ({ time: c[0], low: c[1], high: c[2], open: c[3], close: c[4], volume: c[5] }));
+}
+
+// ---- Оценка сигналов: каждый индикатор голосует со своим весом ----
+function analyse(candles) {
+  const closes = candles.map(c => c.close);
+  const volumes = candles.map(c => c.volume);
+  const i = closes.length - 1;
+
+  const ema12 = ema(closes, 12), ema26 = ema(closes, 26);
+  const sma20 = sma(closes, 20), sma50 = sma(closes, 50);
+  const rsi14 = rsi(closes, 14);
+  const m = macd(closes, 12, 26, 9);
+  const bb = bollinger(closes, 20, 2);
+  const obvArr = obv(closes, volumes);
+
+  const votes = []; // {name, score, weight, note}
+  const add = (name, score, weight, note) => votes.push({ name, score, weight, note });
+
+  // Тренд: быстрая EMA против медленной
+  if (ema12[i] != null && ema26[i] != null) {
+    const diff = (ema12[i] - ema26[i]) / closes[i];
+    add('Тренд EMA 12/26', diff > 0.001 ? 1 : diff < -0.001 ? -1 : 0, 2,
+        diff > 0 ? 'быстрая выше медленной — рост' : 'быстрая ниже медленной — падение');
+  }
+  // MACD: знак гистограммы + направление
+  if (m.histogram[i] != null && m.histogram[i - 1] != null) {
+    const h = m.histogram[i], rising = h > m.histogram[i - 1];
+    add('MACD', h > 0 ? (rising ? 1 : 0.5) : (rising ? -0.5 : -1), 2,
+        `гистограмма ${h > 0 ? 'выше' : 'ниже'} нуля, ${rising ? 'растёт' : 'падает'}`);
+  }
+  // RSI: зоны перекупленности/перепроданности
+  if (rsi14[i] != null) {
+    const r = rsi14[i];
+    const s = r < 30 ? 1 : r < 45 ? 0.5 : r > 70 ? -1 : r > 55 ? -0.5 : 0;
+    add('RSI(14)', s, 2, `${r.toFixed(1)} — ${r < 30 ? 'перепродан' : r > 70 ? 'перекуплен' : 'нейтрально'}`);
+  }
+  // Боллинджер: положение цены в канале
+  if (bb.upper[i] != null) {
+    const c = closes[i];
+    const s = c < bb.lower[i] ? 1 : c > bb.upper[i] ? -1 : 0;
+    add('Боллинджер', s, 1.5,
+        c < bb.lower[i] ? 'цена ниже нижней полосы' : c > bb.upper[i] ? 'цена выше верхней полосы' : 'цена внутри канала');
+  }
+  // OBV: объём подтверждает движение?
+  if (obvArr.length > 10) {
+    const slope = obvArr[i] - obvArr[i - 10];
+    add('OBV (объём)', slope > 0 ? 1 : slope < 0 ? -1 : 0, 1,
+        slope > 0 ? 'объём поддерживает рост' : 'объём поддерживает падение');
+  }
+  // Долгий тренд: цена против SMA50
+  if (sma50[i] != null) {
+    add('Цена vs SMA50', closes[i] > sma50[i] ? 1 : -1, 1,
+        closes[i] > sma50[i] ? 'цена выше SMA50' : 'цена ниже SMA50');
+  }
+
+  const total = votes.reduce((s, v) => s + v.score * v.weight, 0);
+  const maxTotal = votes.reduce((s, v) => s + v.weight, 0);
+  const pct = maxTotal ? Math.round(Math.abs(total) / maxTotal * 100) : 0;
+  const verdict = total > maxTotal * 0.2 ? 'buy' : total < -maxTotal * 0.2 ? 'sell' : 'wait';
+
+  return { votes, pct, verdict, indicators: { ema12, ema26, sma20, rsi14, m, bb } };
+}
+
+// ---- Отрисовка ----
+function setupCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = parseInt(canvas.getAttribute('height'));
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.style.height = h + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  return { ctx, w, h };
+}
+
+function drawLine(ctx, xs, ys, color, width = 1.5) {
+  ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();
+  let started = false;
+  for (let i = 0; i < xs.length; i++) {
+    if (ys[i] == null || !Number.isFinite(ys[i])) { started = false; continue; }
+    if (!started) { ctx.moveTo(xs[i], ys[i]); started = true; }
+    else ctx.lineTo(xs[i], ys[i]);
+  }
+  ctx.stroke();
+}
+
+function drawPrice(candles, ind) {
+  const { ctx, w, h } = setupCanvas($('priceChart'));
+  const pad = { l: 8, r: 56, t: 8, b: 8 };
+  const n = candles.length;
+  const all = [];
+  candles.forEach(c => { all.push(c.low, c.high); });
+  ind.bb.upper.forEach(v => v != null && all.push(v));
+  ind.bb.lower.forEach(v => v != null && all.push(v));
+  const min = Math.min(...all), max = Math.max(...all);
+  const x = i => pad.l + (i + 0.5) * (w - pad.l - pad.r) / n;
+  const y = v => pad.t + (max - v) / (max - min) * (h - pad.t - pad.b);
+  const bw = Math.max(1, (w - pad.l - pad.r) / n * 0.6);
+
+  // сетка + подписи цен
+  ctx.fillStyle = '#8b949e'; ctx.font = '11px sans-serif'; ctx.textBaseline = 'middle';
+  for (let g = 0; g <= 4; g++) {
+    const v = min + (max - min) * g / 4, yy = y(v);
+    ctx.strokeStyle = '#21262d'; ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(w - pad.r, yy); ctx.stroke();
+    ctx.fillText(v >= 1000 ? v.toFixed(0) : v.toPrecision(5), w - pad.r + 4, yy);
+  }
+  // полосы Боллинджера — заливка канала
+  ctx.beginPath();
+  let started = false;
+  for (let i = 0; i < n; i++) if (ind.bb.upper[i] != null) {
+    if (!started) { ctx.moveTo(x(i), y(ind.bb.upper[i])); started = true; }
+    else ctx.lineTo(x(i), y(ind.bb.upper[i]));
+  }
+  for (let i = n - 1; i >= 0; i--) if (ind.bb.lower[i] != null) ctx.lineTo(x(i), y(ind.bb.lower[i]));
+  ctx.closePath(); ctx.fillStyle = 'rgba(88,166,255,0.07)'; ctx.fill();
+
+  // свечи
+  for (let i = 0; i < n; i++) {
+    const c = candles[i];
+    const up = c.close >= c.open;
+    ctx.strokeStyle = ctx.fillStyle = up ? '#3fb950' : '#f85149';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x(i), y(c.high)); ctx.lineTo(x(i), y(c.low)); ctx.stroke();
+    const yo = y(c.open), yc = y(c.close);
+    ctx.fillRect(x(i) - bw / 2, Math.min(yo, yc), bw, Math.max(1, Math.abs(yc - yo)));
+  }
+  const xs = candles.map((_, i) => x(i));
+  drawLine(ctx, xs, ind.sma20.map(v => v != null ? y(v) : null), '#d29922');
+  drawLine(ctx, xs, ind.ema12.map(v => v != null ? y(v) : null), '#58a6ff');
+  drawLine(ctx, xs, ind.ema26.map(v => v != null ? y(v) : null), '#bc8cff');
+  drawLine(ctx, xs, ind.bb.upper.map(v => v != null ? y(v) : null), 'rgba(88,166,255,0.5)', 1);
+  drawLine(ctx, xs, ind.bb.lower.map(v => v != null ? y(v) : null), 'rgba(88,166,255,0.5)', 1);
+}
+
+function drawRsi(candles, rsiArr) {
+  const { ctx, w, h } = setupCanvas($('rsiChart'));
+  const pad = { l: 8, r: 56, t: 6, b: 6 };
+  const n = candles.length;
+  const x = i => pad.l + (i + 0.5) * (w - pad.l - pad.r) / n;
+  const y = v => pad.t + (100 - v) / 100 * (h - pad.t - pad.b);
+  ctx.font = '11px sans-serif'; ctx.textBaseline = 'middle';
+  for (const lvl of [30, 50, 70]) {
+    ctx.strokeStyle = lvl === 50 ? '#21262d' : 'rgba(210,153,34,0.35)';
+    ctx.beginPath(); ctx.moveTo(pad.l, y(lvl)); ctx.lineTo(w - pad.r, y(lvl)); ctx.stroke();
+    ctx.fillStyle = '#8b949e'; ctx.fillText(String(lvl), w - pad.r + 4, y(lvl));
+  }
+  drawLine(ctx, candles.map((_, i) => x(i)), rsiArr.map(v => v != null ? y(v) : null), '#58a6ff');
+}
+
+function drawMacd(candles, m) {
+  const { ctx, w, h } = setupCanvas($('macdChart'));
+  const pad = { l: 8, r: 56, t: 6, b: 6 };
+  const n = candles.length;
+  const vals = [...m.macdLine, ...m.signalLine, ...m.histogram].filter(v => v != null);
+  if (!vals.length) return;
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const x = i => pad.l + (i + 0.5) * (w - pad.l - pad.r) / n;
+  const y = v => pad.t + (max - v) / (max - min || 1) * (h - pad.t - pad.b);
+  const bw = Math.max(1, (w - pad.l - pad.r) / n * 0.6);
+  ctx.strokeStyle = '#21262d'; ctx.beginPath(); ctx.moveTo(pad.l, y(0)); ctx.lineTo(w - pad.r, y(0)); ctx.stroke();
+  for (let i = 0; i < n; i++) {
+    const v = m.histogram[i];
+    if (v == null) continue;
+    ctx.fillStyle = v >= 0 ? 'rgba(63,185,80,0.6)' : 'rgba(248,81,73,0.6)';
+    const yy = y(v), y0 = y(0);
+    ctx.fillRect(x(i) - bw / 2, Math.min(yy, y0), bw, Math.max(1, Math.abs(yy - y0)));
+  }
+  const xs = candles.map((_, i) => x(i));
+  drawLine(ctx, xs, m.macdLine.map(v => v != null ? y(v) : null), '#58a6ff');
+  drawLine(ctx, xs, m.signalLine.map(v => v != null ? y(v) : null), '#d29922');
+}
+
+function render(candles, res, pair) {
+  $('status').style.display = 'none';
+  $('content').style.display = 'grid';
+  const last = candles[candles.length - 1];
+  $('pairLabel').textContent = pair;
+  $('lastPrice').textContent = last.close >= 1000
+    ? last.close.toLocaleString('ru-RU', { maximumFractionDigits: 0 }) + ' $'
+    : last.close + ' $';
+
+  const v = $('verdict');
+  v.className = 'verdict ' + res.verdict;
+  v.textContent = res.verdict === 'buy' ? '▲ ПОКУПАТЬ' : res.verdict === 'sell' ? '▼ ПРОДАВАТЬ' : '● ЖДАТЬ';
+  $('confPct').textContent = res.pct + '%';
+  const fill = $('confFill');
+  fill.style.width = res.pct + '%';
+  fill.style.background = res.verdict === 'buy' ? 'var(--green)' : res.verdict === 'sell' ? 'var(--red)' : 'var(--yellow)';
+
+  $('voteRows').innerHTML = res.votes.map(vt => {
+    const cls = vt.score > 0 ? 'vote-buy' : vt.score < 0 ? 'vote-sell' : 'vote-neutral';
+    const arrow = vt.score > 0 ? '▲' : vt.score < 0 ? '▼' : '—';
+    return `<div class="row"><span>${vt.name}<br><span class="muted">${vt.note}</span></span><span class="${cls}">${arrow}</span></div>`;
+  }).join('');
+
+  drawPrice(candles, res.indicators);
+  drawRsi(candles, res.indicators.rsi14);
+  drawMacd(candles, res.indicators.m);
+  $('updated').textContent = 'Обновлено: ' + new Date().toLocaleTimeString('ru-RU');
+}
+
+async function refresh() {
+  const pair = $('pair').value, tf = $('tf').value;
+  $('status').style.display = 'block';
+  $('status').className = 'card';
+  $('status').textContent = 'Загрузка данных…';
+  try {
+    const candles = await fetchCandles(pair, tf);
+    if (candles.length < 30) throw new Error('слишком мало данных');
+    const res = analyse(candles);
+    render(candles, res, pair);
+  } catch (e) {
+    $('content').style.display = 'none';
+    $('status').style.display = 'block';
+    $('status').className = 'card error';
+    $('status').textContent = 'Ошибка загрузки: ' + e.message + '. Попробуйте обновить.';
+  }
+}
+
+$('refresh').addEventListener('click', refresh);
+$('pair').addEventListener('change', refresh);
+$('tf').addEventListener('change', refresh);
+window.addEventListener('resize', () => refresh());
+refresh();
+setInterval(refresh, 60000); // автообновление раз в минуту
+</script>
+</body>
+</html>
