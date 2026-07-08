@@ -57,6 +57,10 @@
   button.small { padding: 6px 10px; font-size: 13px; border-radius: 8px; }
   input[type=number] { width: 130px; }
   .spark { width: 100%; height: 36px; display: block; margin-top: 10px; opacity: .8; }
+  .evidence {
+    margin-top: 10px; padding: 10px 12px; border-radius: 10px; font-size: 13.5px;
+    line-height: 1.45; background: rgba(77,159,255,0.08); border: 1px solid rgba(77,159,255,0.25);
+  }
   h2 { font-size: 15px; margin-bottom: 10px; color: var(--accent); }
   .row { display: flex; justify-content: space-between; align-items: center; gap: 8px;
     padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
@@ -153,9 +157,12 @@ async function fetchHistory(id) {
 }
 async function fetchFng() {
   try {
-    const res = await fetch('https://api.alternative.me/fng/');
+    const res = await fetch('https://api.alternative.me/fng/?limit=365');
     const j = await res.json();
-    return j.data && j.data[0] ? parseInt(j.data[0].value) : null;
+    if (!j.data || !j.data.length) return null;
+    // API отдаёт от новых к старым — разворачиваем в хронологию (старые -> новые)
+    const hist = j.data.map(d => parseInt(d.value)).reverse();
+    return { current: hist.at(-1), hist };
   } catch { return null; }
 }
 
@@ -191,6 +198,45 @@ function analyseCoin(prices, fng) {
   if (score >= 7) verdict = 'strongbuy';
   else if (score >= 4) verdict = 'buy';
   return { cur, sma200, high, discount, vsAvg, score, why, verdict };
+}
+
+// Проверка по истории: как часто похожие сигналы за последний год
+// оказывались прибыльными через 30 дней
+function historyEvidence(prices, fngHist) {
+  if (!fngHist || prices.length < 240) return null;
+  // выравниваем ряды по концу: последний элемент обоих — сегодня
+  const n = prices.length;
+  const fngAt = i => {
+    const j = fngHist.length - (n - i);
+    return j >= 0 && j < fngHist.length ? fngHist[j] : null;
+  };
+  // скользящие суммы для средней за 200 дней
+  const prefix = [0];
+  for (const p of prices) prefix.push(prefix.at(-1) + p);
+  const sma200At = i => (prefix[i + 1] - prefix[i - 199]) / 200;
+
+  let runMax = -Infinity;
+  const signals = [];
+  for (let i = 0; i < n; i++) {
+    runMax = Math.max(runMax, prices[i]);
+    if (i < 200 || i > n - 31) continue;
+    const f = fngAt(i);
+    if (f == null) continue;
+    // те же условия, что дают вердикт «покупать» сегодня
+    let s = 0;
+    if (f <= 20) s += 3; else if (f <= 30) s += 2; else if (f <= 45) s += 1;
+    else if (f >= 75) s -= 2; else if (f >= 60) s -= 1;
+    const sma = sma200At(i);
+    if (prices[i] < sma * 0.85) s += 3; else if (prices[i] < sma) s += 2;
+    else if (prices[i] > sma * 1.3) s -= 2;
+    const disc = (1 - prices[i] / runMax) * 100;
+    if (disc >= 45) s += 3; else if (disc >= 30) s += 2; else if (disc >= 15) s += 1;
+    if (s >= 4) signals.push(prices[i + 30] / prices[i] - 1);
+  }
+  if (!signals.length) return { count: 0 };
+  const wins = signals.filter(r => r > 0).length;
+  const avgRet = signals.reduce((a, b) => a + b, 0) / signals.length * 100;
+  return { count: signals.length, wins, avgRet };
 }
 
 // Совет о продаже: рынок перегрет и твоя позиция в хорошем плюсе
@@ -256,7 +302,19 @@ function sparkline(canvas, prices) {
   ctx.stroke();
 }
 
-function coinCard(coin, a, advice, cachedAt) {
+function evidenceLine(a, ev, advice) {
+  if (!ev || advice) return '';
+  const isBuy = a.verdict === 'buy' || a.verdict === 'strongbuy';
+  if (ev.count === 0) {
+    return isBuy ? '<div class="evidence">📊 За последний год настолько похожих условий не было — сигнал редкий, тем интереснее.</div>' : '';
+  }
+  const stat = `похожие сигналы за год появлялись <b>${ev.count}</b> раз; через месяц цена была выше в <b>${ev.wins} из ${ev.count}</b> случаев (в среднем ${ev.avgRet >= 0 ? '+' : ''}${ev.avgRet.toFixed(1)}%)`;
+  return isBuy
+    ? `<div class="evidence">📊 Проверено по истории: ${stat}.</div>`
+    : `<div class="evidence">📊 Для сравнения: ${stat}.</div>`;
+}
+
+function coinCard(coin, a, advice, cachedAt, ev) {
   const buyRub = Math.min(
     Math.max(100, Math.round((a.verdict === 'strongbuy' ? 1 : 0.5) * maxBuy() / 100) * 100),
     maxBuy()
@@ -305,6 +363,7 @@ function coinCard(coin, a, advice, cachedAt) {
     </div>
     <div class="answer ${cls}">${headline}</div>
     <div class="reason">${reason}</div>
+    ${evidenceLine(a, ev, advice)}
     ${action}
     <canvas class="spark" data-spark="${coin.sym}"></canvas>
     <div class="muted">Цена за 3 месяца · скидка от максимума года: ${a.discount.toFixed(0)}%${
@@ -367,8 +426,8 @@ function render() {
   for (const coin of COINS) {
     const c = state.coins[coin.sym];
     if (!c) continue;
-    const advice = sellAdvice(c.analysis, getPf()[coin.sym], state.fng);
-    html.push(coinCard(coin, c.analysis, advice, c.cachedAt));
+    const advice = sellAdvice(c.analysis, getPf()[coin.sym], state.fng ? state.fng.current : null);
+    html.push(coinCard(coin, c.analysis, advice, c.cachedAt, c.evidence));
   }
   $('signals').innerHTML = html.join('') ||
     '<div class="card"><div class="error">Сервис цен сейчас перегружен (бесплатный лимит запросов).</div>' +
@@ -400,7 +459,7 @@ function render() {
   renderPortfolio();
   maybeNotify();
   $('updated').textContent = 'Обновлено: ' + new Date().toLocaleTimeString('ru-RU') +
-    (state.fng != null ? ` · настроение рынка: ${state.fng}/100` : '');
+    (state.fng ? ` · настроение рынка: ${state.fng.current}/100` : '');
 }
 
 // ---------- Уведомления ----------
@@ -439,7 +498,8 @@ async function refresh() {
         state.coins[coin.sym] = {
           prices: hist[i].prices,
           cachedAt: hist[i].cachedAt,
-          analysis: analyseCoin(hist[i].prices, fng),
+          analysis: analyseCoin(hist[i].prices, fng ? fng.current : null),
+          evidence: historyEvidence(hist[i].prices, fng ? fng.hist : null),
         };
       }
     });
