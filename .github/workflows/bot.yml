@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: '*/30 * * * *'   # проверка каждые ~30 минут (GitHub может задерживать)
   workflow_dispatch: {}       # ручной запуск для проверки
+  push:
+    branches: [main]
+    paths: ['bot/briefing.json']  # утренний разбор от ИИ запускает отправку сразу
 
 permissions:
   contents: write             # чтобы запоминать последний сигнал в bot/state.json
