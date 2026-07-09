@@ -53,8 +53,12 @@ def fetch_recent(inst_id, bar="1H", limit=300):
     return sorted(_parse(rows), key=lambda c: c["ts"])
 
 
-def fetch_history(inst_id, bar="1H", total=9000):
-    """Глубокая история постранично через history-candles (100 свечей за запрос)."""
+def fetch_history(inst_id, bar="1H", total=9000, confirmed_only=False):
+    """Глубокая история постранично через history-candles (100 свечей за запрос).
+
+    confirmed_only=True отбрасывает текущую незакрытую свечу — обязательно
+    для живых сигналов, иначе решение принимается по недорисованной свече.
+    """
     candles = []
     after = ""
     while len(candles) < total:
@@ -64,7 +68,7 @@ def fetch_history(inst_id, bar="1H", total=9000):
         rows = _get("/api/v5/market/history-candles", params)
         if not rows:
             break
-        batch = _parse(rows, confirmed_only=False)
+        batch = _parse(rows, confirmed_only=confirmed_only)
         candles.extend(batch)
         after = rows[-1][0]  # самая старая метка в пачке
         time.sleep(0.25)  # лимит OKX: 10 запросов / 2 сек

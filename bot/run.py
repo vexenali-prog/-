@@ -52,7 +52,7 @@ def main():
 
     candles = {}
     for sym in strategy.SYMBOLS:
-        candles[sym] = fetch_history(sym, "1H", CANDLES_NEEDED)
+        candles[sym] = fetch_history(sym, "1H", CANDLES_NEEDED, confirmed_only=True)
         if len(candles[sym]) < strategy.WARMUP:
             raise RuntimeError(f"{sym}: мало данных ({len(candles[sym])})")
 
