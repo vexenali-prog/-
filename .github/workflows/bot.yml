@@ -8,7 +8,9 @@ on:
   workflow_dispatch: {}       # ручной запуск для проверки
   push:
     branches: [main]
-    paths: ['bot/briefing.json']  # утренний разбор от ИИ запускает отправку сразу
+    paths:
+      - 'bot/briefing.json'   # утренний разбор от ИИ запускает отправку сразу
+      - 'bot/ping'            # «сердцебиение» от Claude, если расписание GitHub спит
 
 permissions:
   contents: write             # чтобы запоминать последний сигнал в bot/state.json
