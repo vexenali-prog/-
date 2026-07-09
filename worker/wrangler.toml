@@ -1,0 +1,5 @@
+name = "shturman-bot"
+main = "worker.js"
+compatibility_date = "2026-06-01"
+
+# Секрет BOT_TOKEN добавляется командой: wrangler secret put BOT_TOKEN

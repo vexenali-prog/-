@@ -79,6 +79,15 @@ def main():
     now = datetime.now(timezone.utc)
     state["cash"] = pf.cash
     state["positions"] = pf.positions
+    # снимок индикаторов для интерактивного меню (Cloudflare Worker)
+    state["indicators"] = {
+        sym: {
+            "ema": round(strategy.compute(candles[sym])["ema"][-1], 6),
+            "close": candles[sym][-1]["close"],
+            "ts": candles[sym][-1]["ts"],
+        }
+        for sym in strategy.SYMBOLS
+    }
     state["trades"].extend(pf.trades)
     state["equity_history"].append({"ts": int(now.timestamp() * 1000), "equity": round(equity, 2)})
     state["equity_history"] = state["equity_history"][-2200:]  # ~3 месяца часовых точек

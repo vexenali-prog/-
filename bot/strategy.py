@@ -16,7 +16,11 @@
 
 from bot.indicators import ema
 
-SYMBOLS = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+SYMBOLS = [
+    "BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT",
+    "ADA-USDT", "LINK-USDT", "AVAX-USDT", "DOT-USDT", "LTC-USDT",
+    "TRX-USDT", "BCH-USDT", "ETC-USDT",
+]
 
 EMA_PERIOD = 700   # ~29 дней на часовых свечах
 BAND = 0.02        # гистерезис ±2%

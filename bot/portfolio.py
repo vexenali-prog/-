@@ -22,8 +22,7 @@ class Portfolio:
     def buy(self, symbol, price, ts, prices):
         if symbol in self.positions:
             return None
-        slots_left = len(strategy.SYMBOLS) - len(self.positions)
-        budget = min(self.cash / slots_left, self.equity(prices) / len(strategy.SYMBOLS))
+        budget = min(self.cash, self.equity(prices) / len(strategy.SYMBOLS))
         qty = budget / (price * (1 + strategy.FEE))
         if qty * price < 10:  # не открываем позиции меньше 10 USDT
             return None
