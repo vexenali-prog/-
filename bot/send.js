@@ -1,7 +1,7 @@
-// Телеграм-бот «Момент» v2.
-// Каждые ~30 минут (GitHub Actions): проверяет рынок BTC/TON, отвечает на команды,
-// присылает: смену сигнала, резкие движения, утреннюю сводку с ИИ-разбором
-// (bot/briefing.json пишет ежедневная сессия Claude), недельный отчёт по воскресеньям.
+// Телеграм-бот «Момент» v3.
+// Формат «что делать»: вердикт, срок покупки, уровни продажи в рублях.
+// Каждые ~30 минут (GitHub Actions): смена сигнала, резкие движения, команды,
+// утренняя сводка с ИИ-разбором (bot/briefing.json), недельный отчёт.
 // Секреты: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID.
 
 const fs = require('fs');
@@ -48,9 +48,18 @@ function rsi14(prices) {
   return 100 - 100 / (1 + g / l);
 }
 
+// Средний дневной размах (по ценам закрытия) — для целей продажи и защиты
+function avgDailyMove(prices, period = 14) {
+  const p = prices.slice(-(period + 1));
+  let s = 0;
+  for (let i = 1; i < p.length; i++) s += Math.abs(p[i] - p[i - 1]);
+  return s / (p.length - 1);
+}
+
 function analyse(prices, fng) {
   const cur = prices.at(-1);
   const sma200 = avg(prices.slice(-200));
+  const sma50 = avg(prices.slice(-50));
   const high = Math.max(...prices);
   const discount = (1 - cur / high) * 100;
   const d1 = (cur / prices.at(-2) - 1) * 100;
@@ -59,11 +68,44 @@ function analyse(prices, fng) {
   const month = prices.slice(-30);
   const corridor = { lo: Math.min(...month), hi: Math.max(...month) };
   const rsi = rsi14(prices);
+  const move = avgDailyMove(prices);
 
   let verdict = 'wait', rub = 0;
   if (fng != null && fng <= 20 && discount >= 40) { verdict = 'strong'; rub = 1000; }
   else if (fng != null && fng <= 30 && cur < sma200) { verdict = 'buy'; rub = 500; }
-  return { cur, sma200, discount, d1, d7, d30, corridor, rsi, verdict, rub };
+
+  // цели для покупки: продажа части и уровень пересмотра.
+  // На спокойном рынке дневной размах маленький — держим минимум +8% / −5%,
+  // иначе цели получаются несерьёзными для покупки «на недели-месяцы»
+  const movePct = move / cur * 100;
+  const target = cur * (1 + Math.max(2.5 * movePct, 8) / 100);
+  const floor = cur * (1 - Math.max(1.5 * movePct, 5) / 100);
+  return { cur, sma200, sma50, discount, d1, d7, d30, corridor, rsi, move, target, floor, verdict, rub };
+}
+
+// На какой срок покупать — по состоянию трендов
+function horizon(a) {
+  if (a.cur > a.sma200 && a.cur > a.sma50) {
+    return 'на 2–8 недель (годовой тренд поддерживает)';
+  }
+  if (a.d30 != null && a.d30 > 0) {
+    return 'недели–месяцы (падение замедлилось, возможен разворот)';
+  }
+  return 'в долгую, на месяцы (тренд ещё вниз — берём маленькими порциями)';
+}
+
+// Почему «ждём» — одной фразой
+function waitReason(a, fng) {
+  const parts = [];
+  if (fng != null && fng > 30) parts.push('страх отступил — скидки «за страх» больше нет');
+  if (a.cur >= a.sma200) parts.push('цена выше средней за год — входить невыгодно');
+  if (!parts.length) parts.push('условия на грани — лучше дождаться более явного момента');
+  return parts.join('; ');
+}
+
+// Пора ли продавать (общий сигнал перегрева)
+function sellSignal(a, fng) {
+  return fng != null && fng >= 70 && a.cur > a.sma200 * 1.2;
 }
 
 // Проверка по истории: похожие условия за год -> что было через 30 дней
@@ -106,57 +148,56 @@ async function tg(method, body) {
   return res.json();
 }
 async function send(text) {
-  const j = await tg('sendMessage', { chat_id: CHAT_ID, text, disable_web_page_preview: true });
+  const j = await tg('sendMessage', { chat_id: CHAT_ID, text, parse_mode: 'HTML', disable_web_page_preview: true });
   if (!j.ok) throw new Error('Telegram: ' + JSON.stringify(j));
 }
 
 // ---------- Блоки сообщений ----------
-const moodBar = f => {
-  const filled = Math.round(f / 10);
-  return '▓'.repeat(filled) + '░'.repeat(10 - filled);
-};
-const moodWord = f => f <= 25 ? '😨 страх — исторически неплохое время закупаться понемногу'
-  : f <= 45 ? '😟 осторожность'
-  : f < 60 ? '😐 нейтрально'
-  : f < 75 ? '🙂 оптимизм — с покупками аккуратнее'
-  : '🤑 жадность — обычно плохое время для покупок';
+const moodBar = f => '●'.repeat(Math.round(f / 10)) + '○'.repeat(10 - Math.round(f / 10));
+const moodWord = f => f <= 25 ? 'страх: исторически неплохое время закупаться понемногу'
+  : f <= 45 ? 'осторожность'
+  : f < 60 ? 'нейтрально'
+  : f < 75 ? 'оптимизм: с покупками аккуратнее'
+  : 'жадность: время думать о продаже, не о покупке';
 
-function verdictLine(coin, a) {
-  const word = a.verdict === 'strong' ? `СИЛЬНЫЙ СИГНАЛ — купить на ${fmtRub(a.rub)}`
-    : a.verdict === 'buy' ? `покупать на ${fmtRub(a.rub)}`
-    : 'ждём';
-  return `${coin.emoji} ${coin.sym}: ${word}`;
-}
-
-function coinBlock(coin, a, ev, full) {
-  const arrow = a.d1 >= 0 ? '↑' : '↓';
-  let s = `${coin.emoji} ${coin.name}: ${fmtRub(a.cur)} (${arrow}${Math.abs(a.d1).toFixed(1)}% сутки, ${pct(a.d7)} неделя${a.d30 != null ? `, ${pct(a.d30)} месяц` : ''})\n`;
-  s += `Скидка от максимума года: ${a.discount.toFixed(0)}% · ${a.cur < a.sma200 ? 'ниже' : 'выше'} средней за год`;
+function actionBlock(coin, a, fng, ev, full) {
+  const L = [];
+  if (sellSignal(a, fng)) {
+    L.push(`${coin.emoji} <b>${coin.name} — ПРОДАТЬ ЧАСТЬ</b>`);
+    L.push(`Рынок перегрет (жадность ${fng}/100, цена сильно выше средней за год) — разумно зафиксировать 25–30% позиции, если она в плюсе.`);
+  } else if (a.verdict === 'strong' || a.verdict === 'buy') {
+    L.push(`${coin.emoji} <b>${coin.name} — ${a.verdict === 'strong' ? 'СИЛЬНЫЙ СИГНАЛ: купить' : 'ПОКУПАТЬ'} на ${fmtRub(a.rub)}</b>`);
+    L.push(`Цена: ${fmtRub(a.cur)} · скидка ${a.discount.toFixed(0)}% от максимума года`);
+    L.push(`⏳ Срок: ${horizon(a)}`);
+    L.push(`🎯 Если купил: продай часть при ${fmtRub(a.target)} (${pct((a.target / a.cur - 1) * 100)}), пересмотри план, если упадёт до ${fmtRub(a.floor)} (${pct((a.floor / a.cur - 1) * 100)})`);
+  } else {
+    L.push(`${coin.emoji} <b>${coin.name} — ЖДАТЬ</b>`);
+    L.push(`Цена: ${fmtRub(a.cur)} · ${waitReason(a, fng)}`);
+    L.push(`💤 Продавать тоже не время: жадности на рынке нет, фиксировать нечего.`);
+  }
   if (full) {
-    if (a.rsi != null) {
-      s += `\nПерегрев (RSI): ${a.rsi.toFixed(0)}/100${a.rsi < 30 ? ' — перепродан, часто близко к отскоку' : a.rsi > 70 ? ' — перегрет, часто близко к откату' : ''}`;
+    L.push(`Динамика: ${pct(a.d1)} сутки · ${pct(a.d7)} неделя${a.d30 != null ? ` · ${pct(a.d30)} месяц` : ''}`);
+    if (a.rsi != null && (a.rsi < 30 || a.rsi > 70)) {
+      L.push(a.rsi < 30 ? 'Перепродан (RSI < 30) — отскоки отсюда случаются часто' : 'Перегрет (RSI > 70) — откаты отсюда случаются часто');
     }
-    s += `\nКоридор месяца: ${fmtRub(a.corridor.lo)} – ${fmtRub(a.corridor.hi)}`;
     if (ev && ev.count > 0) {
-      s += `\n📊 Похожие условия за год: ${ev.count} раз, через месяц плюс в ${ev.wins} из ${ev.count} (среднее ${pct(ev.avgRet)})`;
+      L.push(`📊 Похожие моменты за год: ${ev.count} раз, через месяц плюс в ${ev.wins} из ${ev.count} (в среднем ${pct(ev.avgRet)})`);
     }
   }
-  return s;
+  return L.join('\n');
 }
 
 function statusMessage(title, results, fng, fngWeekAgo, evByCoin, full) {
-  const head = COINS.filter(c => results[c.sym]).map(c => verdictLine(c, results[c.sym])).join('\n');
-  const body = COINS.filter(c => results[c.sym])
-    .map(c => coinBlock(c, results[c.sym], evByCoin[c.sym], full)).join('\n\n');
+  const blocks = COINS.filter(c => results[c.sym])
+    .map(c => actionBlock(c, results[c.sym], fng, evByCoin[c.sym], full));
   let mood = '';
   if (fng != null) {
-    mood = `Настроение рынка: ${moodBar(fng)} ${fng}/100\n${moodWord(fng)}`;
+    mood = `😨 Настроение рынка: ${moodBar(fng)} ${fng}/100 — ${moodWord(fng)}`;
     if (fngWeekAgo != null && Math.abs(fng - fngWeekAgo) >= 5) {
       mood += `\nЗа неделю: ${fngWeekAgo} → ${fng} (${fng < fngWeekAgo ? 'страх усиливается' : 'страх отступает'})`;
     }
   }
-  return `${title}\n\n${head}\n\n${body}\n\n${mood}\n\n` +
-    `Правила: не больше 1000 ₽ за раз, половина капитала всегда в резерве. Это анализ, а не гарантия прибыли.`;
+  return `<b>${title}</b>\n\n${blocks.join('\n\n')}\n\n${mood}\n📌 Не больше 1000 ₽ за раз · половина капитала в резерве · это анализ, не гарантия`;
 }
 
 // ---------- Команды из чата ----------
@@ -172,7 +213,7 @@ async function processCommands(state, buildStatus) {
     if (cmd === '/now' || cmd === '/сейчас') {
       await send(buildStatus('📡 Текущее состояние (по запросу)'));
     } else if (cmd === '/help' || cmd === '/start') {
-      await send('🎯 Я слежу за BTC и TON и пишу сам, когда меняется сигнал.\n\n' +
+      await send('🎯 Я слежу за BTC и TON и пишу сам, когда меняется сигнал: что делать, на какой срок и когда продавать.\n\n' +
         'Команды (отвечаю при ближайшей проверке, до 30 минут):\n' +
         '/now — текущее состояние рынка\n' +
         '/help — эта справка\n\n' +
@@ -189,7 +230,6 @@ async function processCommands(state, buildStatus) {
     process.exit(1);
   }
 
-  // Данные: индекс страха (год истории) и цены
   const fngData = await getJson('https://api.alternative.me/fng/?limit=365');
   let fng = null, fngWeekAgo = null, fngHist = null;
   if (fngData && fngData.data && fngData.data.length) {
@@ -232,7 +272,7 @@ async function processCommands(state, buildStatus) {
   try {
     const b = JSON.parse(fs.readFileSync(BRIEFING_FILE, 'utf8'));
     if (b && b.date === today && state.briefingSent !== b.date && b.text) {
-      await send('🧠 Утренний разбор от ИИ\n\n' + b.text);
+      await send('🧠 <b>Утренний разбор от ИИ</b>\n\n' + b.text);
       state.briefingSent = b.date;
     }
   } catch {}
@@ -245,7 +285,7 @@ async function processCommands(state, buildStatus) {
       if (!a || Math.abs(a.d1) < 8) continue;
       const last = state.volAlert[coin.sym] || 0;
       if (Date.now() - last < 12 * 3600 * 1000) continue;
-      await send(`⚡ ${coin.name} ${a.d1 > 0 ? 'вырос' : 'упал'} на ${Math.abs(a.d1).toFixed(1)}% за сутки — сейчас ${fmtRub(a.cur)}.\n` +
+      await send(`⚡ <b>${coin.name} ${a.d1 > 0 ? 'вырос' : 'упал'} на ${Math.abs(a.d1).toFixed(1)}% за сутки</b> — сейчас ${fmtRub(a.cur)}.\n` +
         (a.d1 < 0 ? 'Резкие падения — не повод паниковать: план и лимиты важнее эмоций.' :
           'Резкий рост — не повод догонять: покупки на эйфории чаще всего убыточны.'));
       state.volAlert[coin.sym] = Date.now();
