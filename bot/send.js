@@ -85,22 +85,16 @@ function analyse(prices, fng) {
 
 // На какой срок покупать — по состоянию трендов
 function horizon(a) {
-  if (a.cur > a.sma200 && a.cur > a.sma50) {
-    return 'на 2–8 недель (годовой тренд поддерживает)';
-  }
-  if (a.d30 != null && a.d30 > 0) {
-    return 'недели–месяцы (падение замедлилось, возможен разворот)';
-  }
-  return 'в долгую, на месяцы (тренд ещё вниз — берём маленькими порциями)';
+  if (a.cur > a.sma200 && a.cur > a.sma50) return 'на 2–8 недель';
+  if (a.d30 != null && a.d30 > 0) return 'недели–месяцы';
+  return 'в долгую (месяцы)';
 }
 
-// Почему «ждём» — одной фразой
+// Почему «ждём» — коротко
 function waitReason(a, fng) {
-  const parts = [];
-  if (fng != null && fng > 30) parts.push('страх отступил — скидки «за страх» больше нет');
-  if (a.cur >= a.sma200) parts.push('цена выше средней за год — входить невыгодно');
-  if (!parts.length) parts.push('условия на грани — лучше дождаться более явного момента');
-  return parts.join('; ');
+  if (a.cur >= a.sma200) return 'дороже средней за год';
+  if (fng != null && fng > 30) return 'страх отступил, скидки нет';
+  return 'момент неявный';
 }
 
 // Пора ли продавать (общий сигнал перегрева)
@@ -147,42 +141,41 @@ async function tg(method, body) {
   });
   return res.json();
 }
-async function send(text) {
-  const j = await tg('sendMessage', { chat_id: CHAT_ID, text, parse_mode: 'HTML', disable_web_page_preview: true });
+const SITE_URL = 'https://vexenali-prog.github.io/-/';
+// Постоянные кнопки под полем ввода: жмёшь — бот отвечает при ближайшей проверке
+const KEYBOARD = {
+  keyboard: [[{ text: '📡 Сейчас' }, { text: '❓ Помощь' }]],
+  resize_keyboard: true,
+  is_persistent: true,
+};
+// Кнопка-ссылка под сообщением: открывается мгновенно
+const SITE_BUTTON = { inline_keyboard: [[{ text: '🌐 Открыть «Момент»', url: SITE_URL }]] };
+
+async function send(text, markup) {
+  const j = await tg('sendMessage', {
+    chat_id: CHAT_ID, text, parse_mode: 'HTML', disable_web_page_preview: true,
+    ...(markup ? { reply_markup: markup } : {}),
+  });
   if (!j.ok) throw new Error('Telegram: ' + JSON.stringify(j));
 }
 
 // ---------- Блоки сообщений ----------
 const moodBar = f => '●'.repeat(Math.round(f / 10)) + '○'.repeat(10 - Math.round(f / 10));
-const moodWord = f => f <= 25 ? 'страх: исторически неплохое время закупаться понемногу'
-  : f <= 45 ? 'осторожность'
-  : f < 60 ? 'нейтрально'
-  : f < 75 ? 'оптимизм: с покупками аккуратнее'
-  : 'жадность: время думать о продаже, не о покупке';
 
 function actionBlock(coin, a, fng, ev, full) {
   const L = [];
   if (sellSignal(a, fng)) {
-    L.push(`${coin.emoji} <b>${coin.name} — ПРОДАТЬ ЧАСТЬ</b>`);
-    L.push(`Рынок перегрет (жадность ${fng}/100, цена сильно выше средней за год) — разумно зафиксировать 25–30% позиции, если она в плюсе.`);
+    L.push(`${coin.emoji} <b>${coin.sym} — ПРОДАТЬ ЧАСТЬ</b> · рынок перегрет (жадность ${fng})`);
   } else if (a.verdict === 'strong' || a.verdict === 'buy') {
-    L.push(`${coin.emoji} <b>${coin.name} — ${a.verdict === 'strong' ? 'СИЛЬНЫЙ СИГНАЛ: купить' : 'ПОКУПАТЬ'} на ${fmtRub(a.rub)}</b>`);
-    L.push(`Цена: ${fmtRub(a.cur)} · скидка ${a.discount.toFixed(0)}% от максимума года`);
-    L.push(`⏳ Срок: ${horizon(a)}`);
-    L.push(`🎯 Если купил: продай часть при ${fmtRub(a.target)} (${pct((a.target / a.cur - 1) * 100)}), пересмотри план, если упадёт до ${fmtRub(a.floor)} (${pct((a.floor / a.cur - 1) * 100)})`);
+    L.push(`${coin.emoji} <b>${coin.sym} — ${a.verdict === 'strong' ? 'СИЛЬНЫЙ СИГНАЛ: купить' : 'ПОКУПАТЬ'} на ${fmtRub(a.rub)}</b>`);
+    L.push(`⏳ ${horizon(a)} · 🎯 цель ${fmtRub(a.target)} (${pct((a.target / a.cur - 1) * 100)}) · 🛑 стоп ${fmtRub(a.floor)}`);
   } else {
-    L.push(`${coin.emoji} <b>${coin.name} — ЖДАТЬ</b>`);
-    L.push(`Цена: ${fmtRub(a.cur)} · ${waitReason(a, fng)}`);
-    L.push(`💤 Продавать тоже не время: жадности на рынке нет, фиксировать нечего.`);
+    L.push(`${coin.emoji} <b>${coin.sym} — ждём</b> · ${waitReason(a, fng)}`);
   }
   if (full) {
-    L.push(`Динамика: ${pct(a.d1)} сутки · ${pct(a.d7)} неделя${a.d30 != null ? ` · ${pct(a.d30)} месяц` : ''}`);
-    if (a.rsi != null && (a.rsi < 30 || a.rsi > 70)) {
-      L.push(a.rsi < 30 ? 'Перепродан (RSI < 30) — отскоки отсюда случаются часто' : 'Перегрет (RSI > 70) — откаты отсюда случаются часто');
-    }
-    if (ev && ev.count > 0) {
-      L.push(`📊 Похожие моменты за год: ${ev.count} раз, через месяц плюс в ${ev.wins} из ${ev.count} (в среднем ${pct(ev.avgRet)})`);
-    }
+    let info = `${fmtRub(a.cur)} · скидка ${a.discount.toFixed(0)}%${a.d30 != null ? ` · за месяц ${pct(a.d30)}` : ''}`;
+    if (ev && ev.count > 0) info += ` · история: плюс в ${ev.wins}/${ev.count}`;
+    L.push(info);
   }
   return L.join('\n');
 }
@@ -192,12 +185,11 @@ function statusMessage(title, results, fng, fngWeekAgo, evByCoin, full) {
     .map(c => actionBlock(c, results[c.sym], fng, evByCoin[c.sym], full));
   let mood = '';
   if (fng != null) {
-    mood = `😨 Настроение рынка: ${moodBar(fng)} ${fng}/100 — ${moodWord(fng)}`;
-    if (fngWeekAgo != null && Math.abs(fng - fngWeekAgo) >= 5) {
-      mood += `\nЗа неделю: ${fngWeekAgo} → ${fng} (${fng < fngWeekAgo ? 'страх усиливается' : 'страх отступает'})`;
-    }
+    const trend = fngWeekAgo != null && Math.abs(fng - fngWeekAgo) >= 5
+      ? (fng < fngWeekAgo ? ' ↓' : ' ↑') : '';
+    mood = `\n😨 Страх ${fng}/100${trend} ${moodBar(fng)}`;
   }
-  return `<b>${title}</b>\n\n${blocks.join('\n\n')}\n\n${mood}\n📌 Не больше 1000 ₽ за раз · половина капитала в резерве · это анализ, не гарантия`;
+  return `<b>${title}</b>\n\n${blocks.join('\n\n')}\n${mood}\n📌 ≤1000 ₽ за раз · 50% в резерве`;
 }
 
 // ---------- Команды из чата ----------
@@ -209,16 +201,14 @@ async function processCommands(state, buildStatus) {
     state.lastUpdateId = Math.max(state.lastUpdateId || 0, u.update_id);
     const msg = u.message;
     if (!msg || !msg.text || String(msg.chat.id) !== String(CHAT_ID)) continue;
-    const cmd = msg.text.trim().split(/[\s@]/)[0].toLowerCase();
-    if (cmd === '/now' || cmd === '/сейчас') {
-      await send(buildStatus('📡 Текущее состояние (по запросу)'));
-    } else if (cmd === '/help' || cmd === '/start') {
-      await send('🎯 Я слежу за BTC и TON и пишу сам, когда меняется сигнал: что делать, на какой срок и когда продавать.\n\n' +
-        'Команды (отвечаю при ближайшей проверке, до 30 минут):\n' +
-        '/now — текущее состояние рынка\n' +
-        '/help — эта справка\n\n' +
-        'Каждое утро ~8:00 МСК — сводка + разбор от ИИ. По воскресеньям — итоги недели.\n' +
-        'Ночью (23:00–08:00 МСК) не беспокою — всё важное придёт утром.');
+    const t = msg.text.trim().toLowerCase();
+    const cmd = t.split(/[\s@]/)[0];
+    if (cmd === '/now' || cmd === '/сейчас' || t === '📡 сейчас') {
+      await send(buildStatus('📡 Сейчас'), SITE_BUTTON);
+    } else if (cmd === '/help' || cmd === '/start' || t === '❓ помощь') {
+      await send('🎯 Слежу за BTC и TON. Пишу сам, когда пора покупать или продавать.\n\n' +
+        'Кнопка «📡 Сейчас» — состояние рынка (отвечаю при ближайшей проверке, до 30 мин).\n' +
+        'Утром ~8:00 — сводка + разбор от ИИ. Ночью не беспокою.', KEYBOARD);
     }
   }
 }
@@ -296,7 +286,7 @@ async function processCommands(state, buildStatus) {
   const signature = COINS.map(c => results[c.sym] ? results[c.sym].verdict : '?').join(',');
   const changed = signature !== state.signature;
   if (changed && !quiet && !MANUAL) {
-    await send(statusMessage('🎯 Сигнал изменился!', results, fng, fngWeekAgo, evByCoin, false));
+    await send(statusMessage('🎯 Сигнал изменился!', results, fng, fngWeekAgo, evByCoin, false), SITE_BUTTON);
     state.signature = signature;
   } else if (changed && (quiet || MANUAL)) {
     state.signature = signature; // запомним; подробности придут в сводке/статусе
@@ -311,13 +301,13 @@ async function processCommands(state, buildStatus) {
         .map(c => `${c.emoji} ${c.sym}: ${pct(results[c.sym].d7)} за неделю`).join('\n');
       text += `\n\nНеделя коротко:\n${weekLines}`;
     }
-    await send(text);
+    await send(text, SITE_BUTTON);
     state.lastMorning = today;
   }
 
   // 6) Ручной запуск — полный статус, чтобы можно было проверить бота в любой момент
   if (MANUAL) {
-    await send(buildStatus('🔧 Ручная проверка — всё работает'));
+    await send(buildStatus('🔧 Ручная проверка — всё работает'), KEYBOARD);
   }
 
   fs.writeFileSync(STATE_FILE, JSON.stringify({ ...state, signature, updatedAt: now.toISOString() }, null, 2));
