@@ -1,62 +1,44 @@
-"""Стратегия: покупка просадок внутри восходящего тренда, часовые свечи.
+"""Трендовая стратегия на часовых свечах (следование за трендом).
 
-Вход (только лонг, только спот):
-  - тренд вверх: EMA50 > EMA200
-  - перепроданность: RSI14 < 35
+Идея: держать монету, пока она торгуется выше своей длинной EMA, и сидеть
+в кэше, когда ниже. Гистерезис (полоса ±BAND вокруг EMA) защищает от
+дёрганья туда-сюда на шуме.
 
-Выход:
-  - стоп-лосс: цена <= вход - 2*ATR14 (на момент входа)
-  - тейк-профит: цена >= вход + 2.5*ATR14
-  - перегрев: RSI14 > 70
-  - слом тренда: EMA50 < EMA200
+Вход:  close > EMA(700) * (1 + BAND)
+Выход: close < EMA(700) * (1 - BAND)
+
+Выбор параметров: бэктест на 2 годах (бычий + медвежий) показал устойчивое
+плато период 600-800 / полоса 1-2%; взята середина. На тех же данных
+активная стратегия «покупай просадки по RSI» стабильно теряла деньги.
+
+Только лонг, только спот, без плеча. Каждой монете — равная доля капитала.
 """
 
-from bot.indicators import atr, ema, rsi
+from bot.indicators import ema
 
 SYMBOLS = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
 
-EMA_FAST = 50
-EMA_SLOW = 200
-RSI_PERIOD = 14
-ATR_PERIOD = 14
-RSI_BUY = 35
-RSI_SELL = 70
-STOP_ATR = 2.0
-TAKE_ATR = 2.5
+EMA_PERIOD = 700   # ~29 дней на часовых свечах
+BAND = 0.02        # гистерезис ±2%
+FEE = 0.001        # 0.1% за сторону (тейкер на споте)
 
-RISK_PER_TRADE = 0.015   # риск на сделку: 1.5% капитала
-MAX_POSITION_FRAC = 0.30  # максимум 30% капитала в одной монете
-MAX_POSITIONS = 3
-FEE = 0.001               # 0.1% за сторону (тейкер на споте)
-
-WARMUP = EMA_SLOW + 10  # минимум свечей до первого сигнала
+WARMUP = EMA_PERIOD + 10  # минимум свечей до первого сигнала
 
 
 def compute(candles):
     closes = [c["close"] for c in candles]
-    highs = [c["high"] for c in candles]
-    lows = [c["low"] for c in candles]
-    return {
-        "ema_fast": ema(closes, EMA_FAST),
-        "ema_slow": ema(closes, EMA_SLOW),
-        "rsi": rsi(closes, RSI_PERIOD),
-        "atr": atr(highs, lows, closes, ATR_PERIOD),
-    }
+    return {"ema": ema(closes, EMA_PERIOD)}
 
 
-def signal_at(ind, i, position):
+def signal_at(ind, i, price, position):
     """Сигнал на закрытии свечи i. position = dict позиции или None."""
-    ef, es = ind["ema_fast"][i], ind["ema_slow"][i]
-    r, a = ind["rsi"][i], ind["atr"][i]
-    if None in (ef, es, r, a):
+    e = ind["ema"][i]
+    if e is None:
         return None
-    uptrend = ef > es
     if position is None:
-        if uptrend and r < RSI_BUY:
-            return {"action": "buy", "atr": a}
+        if price > e * (1 + BAND):
+            return {"action": "buy"}
         return None
-    if r > RSI_SELL:
-        return {"action": "sell", "reason": "RSI перегрет"}
-    if not uptrend:
-        return {"action": "sell", "reason": "слом тренда"}
+    if price < e * (1 - BAND):
+        return {"action": "sell", "reason": "цена ушла под тренд"}
     return None

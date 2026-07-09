@@ -3,8 +3,8 @@
   python -m bot.run
 
 Держит виртуальный портфель в state/paper_state.json: подтягивает свежие
-свечи, проверяет стопы/тейки, открывает и закрывает позиции по стратегии,
-шлёт сделки в Telegram и раз в день — сводку.
+свечи, открывает и закрывает позиции по трендовой стратегии, шлёт сделки
+в Telegram и раз в день — сводку.
 """
 
 import json
@@ -12,13 +12,14 @@ import os
 from datetime import datetime, timezone
 
 from bot import strategy
-from bot.data import fetch_recent
+from bot.data import fetch_history
 from bot.notify import send
 from bot.portfolio import Portfolio
 
 STATE_PATH = os.path.join(os.path.dirname(__file__), "..", "state", "paper_state.json")
 START_CASH = 1000.0
-DAILY_REPORT_HOUR_UTC = 6  # 09:00 по Баку, 09:00 МСК летом
+DAILY_REPORT_HOUR_UTC = 6  # 10:00 по Баку
+CANDLES_NEEDED = strategy.WARMUP + 40
 
 
 def load_state():
@@ -31,7 +32,6 @@ def load_state():
         "trades": [],
         "equity_history": [],
         "last_daily_report": "",
-        "last_processed_ts": {},
     }
 
 
@@ -49,41 +49,29 @@ def main():
     state = load_state()
     pf = Portfolio(state["cash"])
     pf.positions = state["positions"]
-    pf.trades = []
 
     candles = {}
     for sym in strategy.SYMBOLS:
-        candles[sym] = fetch_recent(sym, "1H", 300)
+        candles[sym] = fetch_history(sym, "1H", CANDLES_NEEDED)
         if len(candles[sym]) < strategy.WARMUP:
-            # 300 подтверждённых свечей хватает: WARMUP=210
             raise RuntimeError(f"{sym}: мало данных ({len(candles[sym])})")
 
     prices = {sym: candles[sym][-1]["close"] for sym in strategy.SYMBOLS}
     events = []
 
     for sym in strategy.SYMBOLS:
-        last = candles[sym][-1]
-        # свечи, которых бот ещё не видел — для проверки стопов без пропусков
-        seen = state["last_processed_ts"].get(sym, 0)
-        for c in candles[sym]:
-            if c["ts"] <= seen:
-                continue
-            trade = pf.check_stops(sym, c["high"], c["low"], c["ts"])
-            if trade:
-                events.append(("sell", trade))
-        state["last_processed_ts"][sym] = last["ts"]
-
         ind = strategy.compute(candles[sym])
         i = len(candles[sym]) - 1
-        sig = strategy.signal_at(ind, i, pf.positions.get(sym))
+        ts = candles[sym][i]["ts"]
+        sig = strategy.signal_at(ind, i, prices[sym], pf.positions.get(sym))
         if sig is None:
             continue
         if sig["action"] == "buy":
-            pos = pf.buy(sym, prices[sym], sig["atr"], last["ts"], prices)
+            pos = pf.buy(sym, prices[sym], ts, prices)
             if pos:
                 events.append(("buy", {"symbol": sym, **pos}))
         else:
-            trade = pf.sell(sym, prices[sym], last["ts"], sig["reason"])
+            trade = pf.sell(sym, prices[sym], ts, sig["reason"])
             if trade:
                 events.append(("sell", trade))
 
@@ -101,7 +89,7 @@ def main():
             lines.append(
                 f"🟢 <b>Покупка {e['symbol']}</b>\n"
                 f"Цена {fmt_money(e['entry'])}, объём {fmt_money(e['qty'] * e['entry'])} USDT\n"
-                f"Стоп {fmt_money(e['stop'])} · Тейк {fmt_money(e['target'])}"
+                f"Причина: цена закрепилась выше тренда"
             )
         else:
             emoji = "✅" if e["pnl"] > 0 else "🔴"
@@ -123,7 +111,7 @@ def main():
             f"  {sym}: вход {fmt_money(p['entry'])}, сейчас {fmt_money(prices[sym])} "
             f"({(prices[sym] / p['entry'] - 1) * 100:+.1f}%)"
             for sym, p in pf.positions.items()
-        ] or ["  нет открытых позиций"]
+        ] or ["  нет открытых позиций — сидим в кэше"]
         send(
             f"📊 <b>Дневная сводка (paper)</b>\n"
             f"Портфель: {fmt_money(equity)} USDT ({total_ret:+.1f}% от старта)\n"

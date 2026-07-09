@@ -46,19 +46,14 @@ def run(data):
     for ts in common_ts:
         if ts < warmup_ts:
             continue
-        prices = {}
+        prices = {sym: data[sym][index[sym][ts]]["close"] for sym in strategy.SYMBOLS}
         for sym in strategy.SYMBOLS:
             i = index[sym][ts]
-            c = data[sym][i]
-            prices[sym] = c["close"]
-            pf.check_stops(sym, c["high"], c["low"], ts)
-        for sym in strategy.SYMBOLS:
-            i = index[sym][ts]
-            sig = strategy.signal_at(indicators[sym], i, pf.positions.get(sym))
+            sig = strategy.signal_at(indicators[sym], i, prices[sym], pf.positions.get(sym))
             if sig is None:
                 continue
             if sig["action"] == "buy":
-                pf.buy(sym, prices[sym], sig["atr"], ts, prices)
+                pf.buy(sym, prices[sym], ts, prices)
             else:
                 pf.sell(sym, prices[sym], ts, sig["reason"])
         equity_curve.append(pf.equity(prices))
@@ -100,11 +95,6 @@ def report(pf, curve, timeline, data):
     if pf.trades:
         print(f"Прибыльных:        {len(wins)} ({len(wins) / len(pf.trades) * 100:.0f}%)")
         print(f"Средняя сделка:    {sum(t['pnl_pct'] for t in pf.trades) / len(pf.trades):+.2f}%")
-    by_reason = {}
-    for t in pf.trades:
-        by_reason.setdefault(t["reason"], []).append(t["pnl"])
-    for reason, pnls in sorted(by_reason.items()):
-        print(f"  выходов «{reason}»: {len(pnls)}, суммарно {sum(pnls):+.1f} USDT")
 
 
 if __name__ == "__main__":

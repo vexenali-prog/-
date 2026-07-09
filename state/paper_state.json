@@ -1,21 +1,27 @@
 {
- "cash": 1000.0,
- "positions": {},
+ "cash": 333.44433344433344,
+ "positions": {
+  "ETH-USDT": {
+   "qty": 0.19030765401779234,
+   "entry": 1749.8,
+   "opened_ts": 1783623600000
+  },
+  "SOL-USDT": {
+   "qty": 4.263986727021323,
+   "entry": 78.07,
+   "opened_ts": 1783623600000
+  }
+ },
  "trades": [],
  "equity_history": [
   {
-   "ts": 1783623467701,
-   "equity": 1000.0
+   "ts": 1783624252405,
+   "equity": 999.33
   },
   {
-   "ts": 1783623469144,
-   "equity": 1000.0
+   "ts": 1783624269394,
+   "equity": 999.11
   }
  ],
- "last_daily_report": "2026-07-09",
- "last_processed_ts": {
-  "BTC-USDT": 1783616400000,
-  "ETH-USDT": 1783616400000,
-  "SOL-USDT": 1783616400000
- }
+ "last_daily_report": "2026-07-09"
 }
