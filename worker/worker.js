@@ -25,6 +25,12 @@ const SYMBOLS = [
 export default {
   async fetch(request, env) {
     if (request.method !== "POST") return new Response("ok");
+    if (
+      env.WEBHOOK_SECRET &&
+      request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== env.WEBHOOK_SECRET
+    ) {
+      return new Response("forbidden", { status: 403 });
+    }
     let update;
     try {
       update = await request.json();
