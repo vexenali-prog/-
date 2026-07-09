@@ -1,0 +1,21 @@
+{
+ "cash": 1000.0,
+ "positions": {},
+ "trades": [],
+ "equity_history": [
+  {
+   "ts": 1783623467701,
+   "equity": 1000.0
+  },
+  {
+   "ts": 1783623469144,
+   "equity": 1000.0
+  }
+ ],
+ "last_daily_report": "2026-07-09",
+ "last_processed_ts": {
+  "BTC-USDT": 1783616400000,
+  "ETH-USDT": 1783616400000,
+  "SOL-USDT": 1783616400000
+ }
+}
