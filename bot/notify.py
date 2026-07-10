@@ -9,6 +9,11 @@ import urllib.request
 def send(text):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    # сообщения шлём только из GitHub Actions: локальные и тестовые
+    # запуски не должны беспокоить владельца фантомными сделками
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        print("[локальный запуск — telegram выключен]\n" + text)
+        return False
     if not token or not chat_id:
         print("[telegram выключен]\n" + text)
         return False
@@ -38,7 +43,7 @@ def send_photo(png_bytes, caption=""):
     """Фото с подписью. Multipart собираем вручную, чтобы не тянуть requests."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
+    if os.environ.get("GITHUB_ACTIONS") != "true" or not token or not chat_id:
         print(f"[telegram выключен] фото {len(png_bytes)} байт: {caption}")
         return False
     boundary = "----botboundary7351"

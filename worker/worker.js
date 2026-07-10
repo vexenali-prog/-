@@ -173,6 +173,16 @@ async function checkAlerts(env) {
   }
 }
 
+function errorView(route) {
+  return {
+    text:
+      "⚠️ <b>Данные временно недоступны</b>\n\n" +
+      "Не дозвонился до источника данных — такое бывает на несколько " +
+      "секунд. Торговля при этом идёт как обычно.\n\nНажми «Ещё раз».",
+    keyboard: kb([[["🔄 Ещё раз", route], ["← Меню", "menu"]]]),
+  };
+}
+
 async function handleUpdate(update, env) {
   if (update.callback_query) {
     const cq = update.callback_query;
@@ -189,8 +199,14 @@ async function handleUpdate(update, env) {
       }
       route = "menu";
     }
-    const view = await render(route, env);
     await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
+    let view;
+    try {
+      view = await render(route, env);
+    } catch (e) {
+      console.log("render error:", route, e.stack || e.message);
+      view = errorView(route);
+    }
     await tg(env, "editMessageText", {
       chat_id: cq.message.chat.id,
       message_id: cq.message.message_id,
@@ -214,7 +230,7 @@ async function handleUpdate(update, env) {
     } else if (!target || target <= 0) {
       text = "Не понял цену. Пример: <code>алерт BTC 70000</code>";
     } else {
-      const price = (await getTickers())[sym]?.last;
+      const price = (await getTickersSafe())[sym]?.last;
       const dir = target >= price ? "above" : "below";
       const alerts = await getAlerts(env);
       alerts.push({ sym, target, dir });
@@ -234,7 +250,13 @@ async function handleUpdate(update, env) {
     "/signals": "sg", "/stats": "st", "/help": "hp", "/market": "mk",
     "/alerts": "al",
   }[cmd] || "menu";
-  const view = await render(route, env);
+  let view;
+  try {
+    view = await render(route, env);
+  } catch (e) {
+    console.log("render error:", route, e.stack || e.message);
+    view = errorView(route);
+  }
   await tg(env, "sendMessage", {
     chat_id: msg.chat.id,
     text: view.text,
@@ -247,11 +269,11 @@ async function render(route, env) {
   const [page, ...rest] = route.split(":");
   const arg = rest[0];
   switch (page) {
-    case "pf": return viewPortfolio();
-    case "px": return arg ? viewCoin(arg) : viewPrices();
-    case "sg": return viewSignals();
-    case "st": return viewStats();
-    case "tr": return viewTrades(parseInt(arg || "0", 10));
+    case "pf": return viewPortfolio(env);
+    case "px": return arg ? viewCoin(env, arg) : viewPrices();
+    case "sg": return viewSignals(env);
+    case "st": return viewStats(env);
+    case "tr": return viewTrades(env, parseInt(arg || "0", 10));
     case "mk": return viewMarket();
     case "al": return viewAlerts(env, rest);
     case "dc": return viewDecisions(env);
@@ -266,6 +288,28 @@ async function getState() {
   const r = await fetch(STATE_URL, { cf: { cacheTtl: 30 } });
   if (!r.ok) throw new Error("state fetch failed: " + r.status);
   return r.json();
+}
+
+// Состояние с запасным источником: если GitHub не отвечает из этого
+// дата-центра, берём копию из KV (сторож обновляет её каждые 5 минут).
+async function getStateSafe(env) {
+  try {
+    return await getState();
+  } catch (e) {
+    const cached = env && (await env.CONTROL.get("state_cache"));
+    if (cached) return JSON.parse(cached);
+    throw e;
+  }
+}
+
+// Живые цены — украшение, а не необходимость: при сбое вернём пусто,
+// экраны покажут последние известные цены из часового расчёта.
+async function getTickersSafe() {
+  try {
+    return await getTickers();
+  } catch {
+    return {};
+  }
 }
 
 async function getTickers() {
@@ -328,8 +372,9 @@ async function viewAlerts(env, args) {
   let alerts = await getAlerts(env);
 
   if (action === "new" && p1) {
-    const tickers = await getTickers();
+    const tickers = await getTickersSafe();
     const price = tickers[p1]?.last;
+    if (!price) return errorView("al:new:" + p1);
     const presets = [-10, -5, -3, 3, 5, 10];
     return {
       text:
@@ -347,7 +392,7 @@ async function viewAlerts(env, args) {
   }
 
   if (action === "add" && p1 && p2) {
-    const tickers = await getTickers();
+    const tickers = await getTickersSafe();
     const price = tickers[p1]?.last;
     if (price) {
       const pct = parseFloat(p2);
@@ -362,7 +407,7 @@ async function viewAlerts(env, args) {
     await env.CONTROL.put("alerts", JSON.stringify(alerts));
   }
 
-  const tickers = alerts.length ? await getTickers() : {};
+  const tickers = alerts.length ? await getTickersSafe() : {};
   const lines = alerts.map((a, i) => {
     const now = tickers[a.sym]?.last;
     return (
@@ -388,13 +433,13 @@ async function viewAlerts(env, args) {
 // «Почему система сейчас делает именно это» — по каждой торгуемой монете.
 async function viewDecisions(env) {
   const [state, tickers, paused] = await Promise.all([
-    getState(),
-    getTickers(),
+    getStateSafe(env),
+    getTickersSafe(),
     env ? env.CONTROL.get("paused").then((v) => v === "1") : false,
   ]);
   const ind = state.indicators || {};
   const btc = ind["BTC-USDT"];
-  const btcLive = tickers["BTC-USDT"]?.last;
+  const btcLive = tickers["BTC-USDT"]?.last ?? btc?.close;
   const btcOk = btc && btcLive ? btcLive > btc.ema : true;
 
   const head = [];
@@ -406,8 +451,8 @@ async function viewDecisions(env) {
   );
 
   const lines = TRADED.map((sym) => {
-    const t = tickers[sym];
     const i = ind[sym];
+    const t = tickers[sym] || (i && { last: i.close });
     const pos = (state.positions || {})[sym];
     if (!t || !i) return `• <b>${coin(sym)}</b> — жду первого расчёта`;
 
@@ -462,7 +507,7 @@ async function viewDecisions(env) {
 
 async function viewMarket() {
   const [tickers, fng] = await Promise.all([
-    getTickers(),
+    getTickersSafe(),
     fetch("https://api.alternative.me/fng/?limit=2", { cf: { cacheTtl: 600 } })
       .then((r) => (r.ok ? r.json() : null))
       .catch(() => null),
@@ -497,8 +542,8 @@ async function viewMarket() {
   };
 }
 
-async function viewPortfolio() {
-  const [state, tickers] = await Promise.all([getState(), getTickers()]);
+async function viewPortfolio(env) {
+  const [state, tickers] = await Promise.all([getStateSafe(env), getTickersSafe()]);
   let held = 0;
   const lines = [];
   for (const [sym, pos] of Object.entries(state.positions || {})) {
@@ -575,13 +620,17 @@ async function secondOpinion(sym) {
   return kraken ? { name: "Kraken", price: kraken } : null;
 }
 
-async function viewCoin(sym) {
+async function viewCoin(env, sym) {
   const [state, tickers, second] = await Promise.all([
-    getState(),
-    getTickers(),
+    getStateSafe(env),
+    getTickersSafe(),
     secondOpinion(sym),
   ]);
-  const t = tickers[sym];
+  const ind0 = (state.indicators || {})[sym];
+  // без живой цены показываем последнюю известную из часового расчёта
+  const t = tickers[sym] ||
+    (ind0 && { last: ind0.close, open24h: ind0.close, high24h: ind0.close,
+               low24h: ind0.close, volUsd: 0 });
   if (!t) return { text: "Нет данных по " + coin(sym), keyboard: kb([[["← Цены", "px"]]]) };
   const ch = (t.last / t.open24h - 1) * 100;
   const ind = (state.indicators || {})[sym];
@@ -619,11 +668,11 @@ async function viewCoin(sym) {
   };
 }
 
-async function viewSignals() {
-  const [state, tickers] = await Promise.all([getState(), getTickers()]);
+async function viewSignals(env) {
+  const [state, tickers] = await Promise.all([getStateSafe(env), getTickersSafe()]);
   const lines = SYMBOLS.map((sym) => {
-    const t = tickers[sym];
     const ind = (state.indicators || {})[sym];
+    const t = tickers[sym] || (ind && { last: ind.close });
     const pos = (state.positions || {})[sym];
     if (!t || !ind) {
       return `👁 <b>${coin(sym)}</b> — новая монета, накапливаю историю тренда (~30 дней)`;
@@ -651,8 +700,8 @@ async function viewSignals() {
   };
 }
 
-async function viewStats() {
-  const [state, tickers] = await Promise.all([getState(), getTickers()]);
+async function viewStats(env) {
+  const [state, tickers] = await Promise.all([getStateSafe(env), getTickersSafe()]);
   let invested = 0;
   for (const [sym, pos] of Object.entries(state.positions || {})) {
     invested += pos.qty * (tickers[sym]?.last ?? pos.entry);
@@ -683,8 +732,8 @@ async function viewStats() {
   };
 }
 
-async function viewTrades(page) {
-  const state = await getState();
+async function viewTrades(env, page) {
+  const state = await getStateSafe(env);
   const trades = (state.trades || []).slice().reverse();
   const PER = 5;
   const chunk = trades.slice(page * PER, page * PER + PER);
