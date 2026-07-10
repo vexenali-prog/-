@@ -9,7 +9,7 @@
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from bot import strategy
 from bot.data import fetch_history
@@ -43,6 +43,28 @@ def save_state(state):
 
 def fmt_money(x):
     return f"{x:,.2f}".replace(",", " ")
+
+
+MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня",
+          "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+
+
+def fmt_dt(ts_ms):
+    """Момент времени по Баку (UTC+4): «10 июля, 21:03»."""
+    d = datetime.fromtimestamp(ts_ms / 1000, timezone.utc) + timedelta(hours=4)
+    return f"{d.day} {MONTHS[d.month - 1]}, {d:%H:%M}"
+
+
+def fmt_dur(ms):
+    hours = round(ms / 3_600_000)
+    if hours < 24:
+        return f"{hours} ч"
+    days = hours // 24
+    return f"{days} дн {hours % 24} ч" if hours % 24 else f"{days} дн"
+
+
+def fmt_qty(q):
+    return f"{q:.6g}"
 
 
 def main():
@@ -96,20 +118,32 @@ def main():
     lines = []
     for kind, e in events:
         if kind == "buy":
+            spent = e["qty"] * e["entry"] * (1 + strategy.FEE)
             lines.append(
-                f"🟢 <b>Покупка {e['symbol']}</b>\n"
-                f"Цена {fmt_money(e['entry'])}, объём {fmt_money(e['qty'] * e['entry'])} USDT\n"
-                f"Причина: цена закрепилась выше тренда"
+                f"🟢 <b>КУПИЛ {e['symbol'].replace('-USDT', '')}</b> · {fmt_dt(e['opened_ts'])} (Баку)\n"
+                f"Куплено: {fmt_qty(e['qty'])} монет по {fmt_money(e['entry'])} $\n"
+                f"Потрачено: <b>{fmt_money(spent)} $</b> (с комиссией 0.1%)\n"
+                f"Почему: цена закрепилась выше тренда"
             )
         else:
             emoji = "✅" if e["pnl"] > 0 else "🔴"
+            invested = e["qty"] * e["entry"] * (1 + strategy.FEE)
+            received = e["qty"] * e["exit"] * (1 - strategy.FEE)
             lines.append(
-                f"{emoji} <b>Продажа {e['symbol']}</b> — {e['reason']}\n"
-                f"Вход {fmt_money(e['entry'])} → выход {fmt_money(e['exit'])}\n"
-                f"Результат: {e['pnl']:+.2f} USDT ({e['pnl_pct']:+.2f}%)"
+                f"{emoji} <b>ПРОДАЛ {e['symbol'].replace('-USDT', '')}</b> · {fmt_dt(e['closed_ts'])} (Баку)\n"
+                f"Купил {fmt_dt(e['opened_ts'])} по {fmt_money(e['entry'])} $, "
+                f"продал по {fmt_money(e['exit'])} $\n"
+                f"Вложено {fmt_money(invested)} $ → получено {fmt_money(received)} $ "
+                f"(держал {fmt_dur(e['closed_ts'] - e['opened_ts'])})\n"
+                f"Итог: <b>{e['pnl']:+.2f} $ ({e['pnl_pct']:+.2f}%)</b>\n"
+                f"Почему продал: {e['reason']}"
             )
     if lines:
-        send("\n\n".join(lines) + f"\n\n💼 Портфель: {fmt_money(equity)} USDT (виртуальный)")
+        send(
+            "\n\n".join(lines)
+            + f"\n\n💼 Портфель: <b>{fmt_money(equity)} $</b>"
+            + f" · свободно {fmt_money(pf.cash)} $ (виртуальные)"
+        )
 
     today = now.strftime("%Y-%m-%d")
     if now.hour >= DAILY_REPORT_HOUR_UTC and state["last_daily_report"] != today:
@@ -118,17 +152,21 @@ def main():
         closed = state["trades"]
         wins = sum(1 for t in closed if t["pnl"] > 0)
         pos_lines = [
-            f"  {sym}: вход {fmt_money(p['entry'])}, сейчас {fmt_money(prices[sym])} "
+            f"• <b>{sym.replace('-USDT', '')}</b>: куплено {fmt_dt(p['opened_ts'])} "
+            f"на {fmt_money(p['qty'] * p['entry'] * (1 + strategy.FEE))} $ → "
+            f"сейчас {fmt_money(p['qty'] * prices[sym])} $ "
             f"({(prices[sym] / p['entry'] - 1) * 100:+.1f}%)"
             for sym, p in pf.positions.items()
-        ] or ["  нет открытых позиций — сидим в кэше"]
+        ] or ["• нет открытых позиций — сидим в кэше и ждём тренда"]
         send(
-            f"📊 <b>Дневная сводка (paper)</b>\n"
-            f"Портфель: {fmt_money(equity)} USDT ({total_ret:+.1f}% от старта)\n"
-            f"Свободно: {fmt_money(pf.cash)} USDT\n"
-            f"Позиции:\n" + "\n".join(pos_lines) + "\n"
-            f"Сделок всего: {len(closed)}"
-            + (f", прибыльных {wins} ({wins / len(closed) * 100:.0f}%)" if closed else "")
+            f"📊 <b>Утренняя сводка</b> <i>(виртуальный счёт)</i>\n\n"
+            f"Портфель: <b>{fmt_money(equity)} $</b> ({total_ret:+.1f}% от старта, "
+            f"{equity - START_CASH:+.2f} $)\n"
+            f"Свободно: {fmt_money(pf.cash)} $\n\n"
+            f"Что держим:\n" + "\n".join(pos_lines) + "\n\n"
+            f"Сделок закрыто: {len(closed)}"
+            + (f", прибыльных {wins} ({wins / len(closed) * 100:.0f}%), "
+               f"итог по ним {sum(t['pnl'] for t in closed):+.2f} $" if closed else "")
         )
 
     save_state(state)

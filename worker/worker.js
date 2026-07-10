@@ -139,28 +139,29 @@ function viewMenu() {
 
 async function viewPortfolio() {
   const [state, tickers] = await Promise.all([getState(), getTickers()]);
-  let invested = 0;
+  let held = 0;
   const lines = [];
   for (const [sym, pos] of Object.entries(state.positions || {})) {
     const price = tickers[sym]?.last ?? pos.entry;
     const value = pos.qty * price;
-    const pnlPct = (price / pos.entry - 1) * 100;
-    invested += value;
+    const cost = pos.qty * pos.entry * 1.001; // потрачено с комиссией
+    held += value;
     lines.push(
-      `${pnlPct >= 0 ? "🟢" : "🔴"} <b>${coin(sym)}</b>: ${money(value)} $ ` +
-      `(вход ${money(pos.entry)} → ${money(price)}, <b>${signed(pnlPct)}%</b>)`
+      `${value >= cost ? "🟢" : "🔴"} <b>${coin(sym)}</b> — ` +
+      `<b>${signed((value / cost - 1) * 100)}%</b> (${signed2(value - cost)} $)\n` +
+      `   куплено ${when(pos.opened_ts)} на ${money(cost)} $, сейчас ${money(value)} $\n` +
+      `   ${qty(pos.qty)} монет · цена ${money(pos.entry)} → ${money(price)} $`
     );
   }
-  const equity = state.cash + invested;
+  const equity = state.cash + held;
   const total = (equity / START_CASH - 1) * 100;
   return {
     text:
       "💼 <b>Портфель</b> <i>(виртуальный)</i>\n\n" +
-      `Всего: <b>${money(equity)} $</b> (${signed(total)}% от старта)\n` +
-      `Свободно: ${money(state.cash)} $\n` +
-      `В позициях: ${money(invested)} $\n\n` +
-      (lines.length ? lines.join("\n") : "Открытых позиций нет — сидим в кэше и ждём тренд.") +
-      "\n\n<i>Цены — прямо сейчас с биржи.</i>",
+      `Всего: <b>${money(equity)} $</b> (${signed(total)}% от старта, ${signed2(equity - START_CASH)} $)\n` +
+      `Свободно: ${money(state.cash)} $ · в монетах: ${money(held)} $\n\n` +
+      (lines.length ? lines.join("\n\n") : "Открытых позиций нет — сидим в кэше и ждём тренд.") +
+      "\n\n<i>Цены — прямо сейчас с биржи. Время — по Баку.</i>",
     keyboard: kb([
       [["🔄 Обновить", "pf"], ["🧾 Сделки", "tr:0"]],
       [["← Меню", "menu"]],
@@ -206,7 +207,9 @@ async function viewCoin(sym) {
       `Оборот 24ч: ${short(t.volUsd)} $\n` +
       (trend ? `Тренд: ${trend}\n` : "") +
       (pos
-        ? `\n🟢 <b>В портфеле</b>: вход ${money(pos.entry)} $, сейчас ${signed((t.last / pos.entry - 1) * 100)}%`
+        ? `\n🟢 <b>В портфеле</b>: куплено ${when(pos.opened_ts)} — ` +
+          `${qty(pos.qty)} монет на ${money(pos.qty * pos.entry * 1.001)} $\n` +
+          `Сейчас это ${money(pos.qty * t.last)} $ (<b>${signed((t.last / pos.entry / 1.001 - 1) * 100)}%</b>)`
         : TRADED.includes(sym)
           ? "\n⚪ Не в портфеле"
           : "\n👁 Наблюдение: показываю, но не торгую") +
@@ -254,18 +257,21 @@ async function viewStats() {
   const equity = state.cash + invested;
   const trades = state.trades || [];
   const wins = trades.filter((t) => t.pnl > 0);
+  const realized = trades.reduce((s, t) => s + t.pnl, 0);
   const best = trades.length ? Math.max(...trades.map((t) => t.pnl_pct)) : 0;
   const worst = trades.length ? Math.min(...trades.map((t) => t.pnl_pct)) : 0;
   const started = state.equity_history?.[0]?.ts;
   const days = started ? Math.max(1, Math.round((Date.now() - started) / 86400000)) : 0;
   return {
     text:
-      "📊 <b>Статистика</b> <i>(paper-режим)</i>\n\n" +
-      `Портфель: <b>${money(equity)} $</b>\n` +
-      `Результат: <b>${signed((equity / START_CASH - 1) * 100)}%</b> за ${days} дн.\n\n` +
+      "📊 <b>Статистика</b> <i>(виртуальный счёт)</i>\n\n" +
+      `Начали с: ${money(START_CASH)} $ (${days} дн. назад)\n` +
+      `Сейчас: <b>${money(equity)} $</b>\n` +
+      `Итог: <b>${signed((equity / START_CASH - 1) * 100)}%</b> (${signed2(equity - START_CASH)} $)\n\n` +
       `Сделок закрыто: ${trades.length}\n` +
       (trades.length
-        ? `Прибыльных: ${wins.length} (${Math.round((wins.length / trades.length) * 100)}%)\n` +
+        ? `Заработано на закрытых: ${signed2(realized)} $\n` +
+          `Прибыльных: ${wins.length} из ${trades.length} (${Math.round((wins.length / trades.length) * 100)}%)\n` +
           `Лучшая: ${signed(best)}% · Худшая: ${signed(worst)}%\n`
         : "") +
       "\n<i>Трендовая стратегия зарабатывает редкими крупными выигрышами — " +
@@ -280,10 +286,11 @@ async function viewTrades(page) {
   const PER = 5;
   const chunk = trades.slice(page * PER, page * PER + PER);
   const lines = chunk.map((t) => {
-    const d = new Date(t.closed_ts).toISOString().slice(0, 10);
+    const invested = t.qty * t.entry * 1.001;
     return (
-      `${t.pnl > 0 ? "✅" : "🔴"} <b>${coin(t.symbol)}</b> ${d}\n` +
-      `   ${money(t.entry)} → ${money(t.exit)} $ · <b>${signed(t.pnl_pct)}%</b> (${t.reason})`
+      `${t.pnl > 0 ? "✅" : "🔴"} <b>${coin(t.symbol)}</b> · <b>${signed(t.pnl_pct)}%</b> (${signed2(t.pnl)} $)\n` +
+      `   купил ${when(t.opened_ts)} по ${money(t.entry)} $ на ${money(invested)} $\n` +
+      `   продал ${when(t.closed_ts)} по ${money(t.exit)} $ — ${t.reason}`
     );
   });
   const nav = [];
@@ -306,9 +313,11 @@ function viewHelp(arg) {
         "Следование за трендом: покупаю монету, когда её цена закрепляется " +
         "<b>выше</b> месячной средней (+2%), продаю — когда уходит <b>ниже</b> (−2%).\n\n" +
         "Каждой монете — равная доля капитала. Только спот, без плеча.\n\n" +
+        "Торгую 6 крупнейших монет: BTC, ETH, SOL, XRP, DOGE, TRX. Ещё 7 " +
+        "наблюдаю, но не торгую — на истории они проигрывают.\n\n" +
         "Проверка на 2 годах истории (бычий + медвежий рынок): " +
-        "<b>+47.6%</b> против −27% у «просто держать». Максимальная " +
-        "просадка была ~30% — к такому надо быть готовым.\n\n" +
+        "<b>+64.6%</b> против +21.9% у «просто держать те же монеты». " +
+        "Максимальная просадка была ~35% — к такому надо быть готовым.\n\n" +
         "⚠️ Прошлые результаты не гарантируют будущих.",
       keyboard: kb([[["⏰ Расписание", "hp:schedule"], ["← Помощь", "hp"]], [["← Меню", "menu"]]]),
     };
@@ -329,8 +338,9 @@ function viewHelp(arg) {
   return {
     text:
       "ℹ️ <b>Как всё устроено</b>\n\n" +
-      "Я торгую <b>виртуальной</b> $1000 по настоящим ценам 13 монет: " +
-      "BTC, ETH, SOL, XRP, DOGE, ADA, LINK, AVAX, DOT, LTC, TRX, BCH, ETC.\n\n" +
+      "Я торгую <b>виртуальной</b> $1000 по настоящим ценам. Торгую 6 " +
+      "крупнейших монет (BTC, ETH, SOL, XRP, DOGE, TRX), ещё 7 показываю " +
+      "в ценах и сигналах, но не торгую.\n\n" +
       "Это тренировка: за 3–4 недели станет видно, зарабатывает ли " +
       "стратегия вживую. Если да — подключим реальный счёт с маленькой " +
       "суммой. Если нет — ты потерял ноль.\n\n" +
@@ -362,6 +372,24 @@ function money(x) {
 
 function signed(x) {
   return (x >= 0 ? "+" : "") + x.toFixed(1);
+}
+
+function signed2(x) {
+  return (x >= 0 ? "+" : "") + x.toFixed(2);
+}
+
+function qty(q) {
+  return q.toLocaleString("ru-RU", { maximumSignificantDigits: 6 });
+}
+
+// «10 июля, 21:03» по бакинскому времени
+function when(ts) {
+  const p = new Intl.DateTimeFormat("ru-RU", {
+    timeZone: "Asia/Baku", day: "numeric", month: "long",
+    hour: "2-digit", minute: "2-digit",
+  }).formatToParts(new Date(ts));
+  const g = (t) => p.find((x) => x.type === t)?.value ?? "";
+  return `${g("day")} ${g("month")}, ${g("hour")}:${g("minute")}`;
 }
 
 function short(x) {
