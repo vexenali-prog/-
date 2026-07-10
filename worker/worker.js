@@ -38,7 +38,7 @@ export default {
     if (request.method === "GET") {
       const path = new URL(request.url).pathname;
       if (path === "/" || path === "/index.html") {
-        return new Response(await dashboardHtml(), {
+        return new Response(await dashboardHtml(env), {
           headers: {
             "Content-Type": "text/html; charset=utf-8",
             "Cache-Control": "public, max-age=60",
@@ -85,6 +85,9 @@ const DISPATCH_COOLDOWN_MS = 40 * 60 * 1000;
 async function watchdog(env) {
   try {
     const state = await getState();
+    // страховочная копия для дашборда: если GitHub не откроется из
+    // какого-то региона, страница возьмёт данные отсюда
+    await env.CONTROL.put("state_cache", JSON.stringify(state));
     const points = state.equity_history || [];
     const lastTs = points.length ? points[points.length - 1].ts : 0;
     const age = Date.now() - lastTs;
@@ -792,11 +795,34 @@ function svgChart(points, w, h) {
   );
 }
 
-async function dashboardHtml() {
-  let state = {}, tickers = {};
+async function dashboardHtml(env) {
+  // Состояние: GitHub, при сбое — страховочная копия из KV (её каждые
+  // 5 минут обновляет сторож). Живые цены — необязательное украшение.
+  let state = null, tickers = {};
   try {
-    [state, tickers] = await Promise.all([getState(), getTickers()]);
+    state = await getState();
+  } catch {
+    try {
+      const cached = env && (await env.CONTROL.get("state_cache"));
+      if (cached) state = JSON.parse(cached);
+    } catch {}
+  }
+  try {
+    tickers = await getTickers();
   } catch {}
+
+  if (!state) {
+    return `<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vexen Capital</title><style>:root{color-scheme:dark}
+body{background:#0a1220;color:#edf0f5;font:16px/1.6 -apple-system,'Segoe UI',Roboto,sans-serif;
+display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;text-align:center}
+h1{font-size:24px;letter-spacing:3px}h1 span{color:#c9a227}p{color:#8b96a8}</style></head>
+<body><div><h1>VEXEN <span>CAPITAL</span></h1>
+<p>Данные временно недоступны — обнови страницу через минуту.<br>Торговля при этом идёт как обычно.</p>
+</div></body></html>`;
+  }
+
   const positions = Object.entries(state.positions || {});
   let held = 0;
   const rows = positions.map(([sym, pos]) => {
