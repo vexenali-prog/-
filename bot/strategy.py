@@ -16,10 +16,17 @@
 
 from bot.indicators import ema
 
+# Торгуемые монеты: топ по капитализации. На бэктесте за 2 года эта корзина
+# дала +64.6% (просадка -35%), тогда как все 13 монет — лишь +9.8% при
+# просадке -48%: мелкие альты шумят и сливают трендовую стратегию.
 SYMBOLS = [
-    "BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT",
+    "BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT", "TRX-USDT",
+]
+
+# Наблюдаемые монеты: показываются в меню (цены, тренд), но не торгуются.
+WATCHLIST = SYMBOLS + [
     "ADA-USDT", "LINK-USDT", "AVAX-USDT", "DOT-USDT", "LTC-USDT",
-    "TRX-USDT", "BCH-USDT", "ETC-USDT",
+    "BCH-USDT", "ETC-USDT",
 ]
 
 EMA_PERIOD = 700   # ~29 дней на часовых свечах

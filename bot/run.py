@@ -51,7 +51,7 @@ def main():
     pf.positions = state["positions"]
 
     candles = {}
-    for sym in strategy.SYMBOLS:
+    for sym in strategy.WATCHLIST:
         candles[sym] = fetch_history(sym, "1H", CANDLES_NEEDED, confirmed_only=True)
         if len(candles[sym]) < strategy.WARMUP:
             raise RuntimeError(f"{sym}: мало данных ({len(candles[sym])})")
@@ -79,14 +79,15 @@ def main():
     now = datetime.now(timezone.utc)
     state["cash"] = pf.cash
     state["positions"] = pf.positions
-    # снимок индикаторов для интерактивного меню (Cloudflare Worker)
+    # снимок индикаторов для интерактивного меню (Cloudflare Worker):
+    # по всем наблюдаемым монетам, не только торгуемым
     state["indicators"] = {
         sym: {
             "ema": round(strategy.compute(candles[sym])["ema"][-1], 6),
             "close": candles[sym][-1]["close"],
             "ts": candles[sym][-1]["ts"],
         }
-        for sym in strategy.SYMBOLS
+        for sym in strategy.WATCHLIST
     }
     state["trades"].extend(pf.trades)
     state["equity_history"].append({"ts": int(now.timestamp() * 1000), "equity": round(equity, 2)})

@@ -16,10 +16,12 @@ const OKX_TICKERS = "https://www.okx.com/api/v5/market/tickers?instType=SPOT";
 const START_CASH = 1000;
 const BAND = 0.02;
 
+// Торгуемые монеты (топ по капитализации) и полный список наблюдения.
+const TRADED = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT", "TRX-USDT"];
 const SYMBOLS = [
-  "BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT",
+  ...TRADED,
   "ADA-USDT", "LINK-USDT", "AVAX-USDT", "DOT-USDT", "LTC-USDT",
-  "TRX-USDT", "BCH-USDT", "ETC-USDT",
+  "BCH-USDT", "ETC-USDT",
 ];
 
 export default {
@@ -122,8 +124,8 @@ function viewMenu() {
   return {
     text:
       "👋 <b>Привет! Я Штурман — твой торговый бот.</b>\n\n" +
-      "Слежу за 13 криптовалютами круглосуточно и торгую по трендовой " +
-      "стратегии, проверенной на 2 годах истории.\n\n" +
+      "Слежу за 13 криптовалютами круглосуточно, торгую 6 крупнейшими " +
+      "по трендовой стратегии, проверенной на 2 годах истории.\n\n" +
       "🧪 Сейчас — <b>тренировочный режим</b>: деньги виртуальные, цены " +
       "настоящие. Докажу прибыльность — обсудим реальный счёт.\n\n" +
       "Что показать?",
@@ -205,7 +207,9 @@ async function viewCoin(sym) {
       (trend ? `Тренд: ${trend}\n` : "") +
       (pos
         ? `\n🟢 <b>В портфеле</b>: вход ${money(pos.entry)} $, сейчас ${signed((t.last / pos.entry - 1) * 100)}%`
-        : "\n⚪ Не в портфеле") +
+        : TRADED.includes(sym)
+          ? "\n⚪ Не в портфеле"
+          : "\n👁 Наблюдение: показываю, но не торгую") +
       "\n\n<i>Цена живая; тренд — по последнему часовому расчёту.</i>",
     keyboard: kb([[["🔄 Обновить", "px:" + sym], ["← Цены", "px"]], [["← Меню", "menu"]]]),
   };
@@ -219,6 +223,9 @@ async function viewSignals() {
     const pos = (state.positions || {})[sym];
     if (!t || !ind) return `⚪ <b>${coin(sym)}</b> — ждём первого расчёта`;
     const dist = (t.last / ind.ema - 1) * 100;
+    if (!TRADED.includes(sym)) {
+      return `👁 <b>${coin(sym)}</b> — наблюдаю (${signed(dist)}% к тренду), не торгуется`;
+    }
     if (pos) {
       return dist < -BAND * 100
         ? `🟠 <b>${coin(sym)}</b> — держим, но цена под трендом: бот продаст на закрытии часа`
