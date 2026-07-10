@@ -24,8 +24,15 @@ const SYMBOLS = [
   "BCH-USDT", "ETC-USDT",
 ];
 
+// Чат владельца: только он может ставить бота на паузу.
+const OWNER_CHAT = 5480566532;
+
 export default {
   async fetch(request, env) {
+    if (request.method === "GET" && new URL(request.url).pathname === "/control") {
+      const paused = (await env.CONTROL.get("paused")) === "1";
+      return Response.json({ paused });
+    }
     if (request.method !== "POST") return new Response("ok");
     if (
       env.WEBHOOK_SECRET &&
@@ -51,7 +58,16 @@ export default {
 async function handleUpdate(update, env) {
   if (update.callback_query) {
     const cq = update.callback_query;
-    const view = await render(cq.data);
+    let route = cq.data;
+    if (route === "tgl") {
+      // тумблер паузы: только владелец
+      if (cq.message.chat.id === OWNER_CHAT) {
+        const paused = (await env.CONTROL.get("paused")) === "1";
+        await env.CONTROL.put("paused", paused ? "0" : "1");
+      }
+      route = "menu";
+    }
+    const view = await render(route, env);
     await tg(env, "answerCallbackQuery", { callback_query_id: cq.id });
     await tg(env, "editMessageText", {
       chat_id: cq.message.chat.id,
@@ -67,9 +83,9 @@ async function handleUpdate(update, env) {
   const cmd = msg.text.split(/[@\s]/)[0];
   const route = {
     "/start": "menu", "/portfolio": "pf", "/prices": "px",
-    "/signals": "sg", "/stats": "st", "/help": "hp",
+    "/signals": "sg", "/stats": "st", "/help": "hp", "/market": "mk",
   }[cmd] || "menu";
-  const view = await render(route);
+  const view = await render(route, env);
   await tg(env, "sendMessage", {
     chat_id: msg.chat.id,
     text: view.text,
@@ -78,7 +94,7 @@ async function handleUpdate(update, env) {
   });
 }
 
-async function render(route) {
+async function render(route, env) {
   const [page, arg] = route.split(":");
   switch (page) {
     case "pf": return viewPortfolio();
@@ -86,8 +102,9 @@ async function render(route) {
     case "sg": return viewSignals();
     case "st": return viewStats();
     case "tr": return viewTrades(parseInt(arg || "0", 10));
+    case "mk": return viewMarket();
     case "hp": return viewHelp(arg);
-    default: return viewMenu();
+    default: return viewMenu(env);
   }
 }
 
@@ -120,7 +137,8 @@ async function getTickers() {
 
 // ---------- экраны ----------
 
-function viewMenu() {
+async function viewMenu(env) {
+  const paused = env ? (await env.CONTROL.get("paused")) === "1" : false;
   return {
     text:
       "👋 <b>Привет! Я Штурман — твой торговый бот.</b>\n\n" +
@@ -128,12 +146,53 @@ function viewMenu() {
       "по трендовой стратегии, проверенной на 2 годах истории.\n\n" +
       "🧪 Сейчас — <b>тренировочный режим</b>: деньги виртуальные, цены " +
       "настоящие. Докажу прибыльность — обсудим реальный счёт.\n\n" +
+      (paused
+        ? "⏸ <b>Покупки на паузе</b> — бот только сопровождает открытые позиции.\n\n"
+        : "") +
       "Что показать?",
     keyboard: kb([
       [["💼 Портфель", "pf"], ["📈 Цены", "px"]],
-      [["🧭 Сигналы", "sg"], ["📊 Статистика", "st"]],
-      [["🧾 Сделки", "tr:0"], ["ℹ️ Помощь", "hp"]],
+      [["🧭 Сигналы", "sg"], ["🌡 Рынок", "mk"]],
+      [["📊 Статистика", "st"], ["🧾 Сделки", "tr:0"]],
+      [[paused ? "▶️ Возобновить покупки" : "⏸ Пауза покупок", "tgl"], ["ℹ️ Помощь", "hp"]],
     ]),
+  };
+}
+
+async function viewMarket() {
+  const [tickers, fng] = await Promise.all([
+    getTickers(),
+    fetch("https://api.alternative.me/fng/?limit=2", { cf: { cacheTtl: 600 } })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null),
+  ]);
+  let mood = "нет данных";
+  if (fng?.data?.length) {
+    const v = parseInt(fng.data[0].value, 10);
+    const prev = fng.data[1] ? parseInt(fng.data[1].value, 10) : v;
+    const label =
+      v <= 25 ? "😱 сильный страх" :
+      v <= 45 ? "😨 страх" :
+      v <= 55 ? "😐 нейтрально" :
+      v <= 75 ? "🙂 жадность" : "🤑 сильная жадность";
+    mood = `${label} — ${v}/100 (вчера ${prev})`;
+  }
+  const moves = SYMBOLS
+    .map((sym) => {
+      const t = tickers[sym];
+      return t ? { sym, ch: (t.last / t.open24h - 1) * 100 } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.ch - a.ch);
+  const row = (m) => `${m.ch >= 0 ? "🟢" : "🔴"} ${coin(m.sym)} ${signed(m.ch)}%`;
+  return {
+    text:
+      "🌡 <b>Рынок сейчас</b>\n\n" +
+      `Индекс страха и жадности: <b>${mood}</b>\n` +
+      "<i>Страх — все продают (часто дно), жадность — все скупают (часто пик).</i>\n\n" +
+      "<b>Растут за 24ч:</b>\n" + moves.slice(0, 3).map(row).join("\n") + "\n\n" +
+      "<b>Падают за 24ч:</b>\n" + moves.slice(-3).reverse().map(row).join("\n"),
+    keyboard: kb([[["🔄 Обновить", "mk"], ["🧭 Сигналы", "sg"]], [["← Меню", "menu"]]]),
   };
 }
 
@@ -185,8 +244,42 @@ async function viewPrices() {
   };
 }
 
+// Вторая биржа для сверки цены: Bybit, а если он недоступен из этого
+// дата-центра (гео-блок) — Kraken. Имена пар у Kraken свои.
+const KRAKEN_PAIRS = {
+  "BTC-USDT": "XBTUSDT", "DOGE-USDT": "XDGUSDT", "TRX-USDT": "TRXUSD",
+  "ETC-USDT": "ETCUSD",
+};
+
+async function secondOpinion(sym) {
+  const bybit = await fetch(
+    "https://api.bybit.com/v5/market/tickers?category=spot&symbol=" + sym.replace("-", ""),
+    { cf: { cacheTtl: 3 } }
+  )
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => parseFloat(d?.result?.list?.[0]?.lastPrice) || null)
+    .catch(() => null);
+  if (bybit) return { name: "Bybit", price: bybit };
+  const pair = KRAKEN_PAIRS[sym] || sym.replace("-", "");
+  const kraken = await fetch("https://api.kraken.com/0/public/Ticker?pair=" + pair, {
+    cf: { cacheTtl: 3 },
+  })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => {
+      const res = d?.result || {};
+      const first = res[Object.keys(res)[0]];
+      return parseFloat(first?.c?.[0]) || null;
+    })
+    .catch(() => null);
+  return kraken ? { name: "Kraken", price: kraken } : null;
+}
+
 async function viewCoin(sym) {
-  const [state, tickers] = await Promise.all([getState(), getTickers()]);
+  const [state, tickers, second] = await Promise.all([
+    getState(),
+    getTickers(),
+    secondOpinion(sym),
+  ]);
   const t = tickers[sym];
   if (!t) return { text: "Нет данных по " + coin(sym), keyboard: kb([[["← Цены", "px"]]]) };
   const ch = (t.last / t.open24h - 1) * 100;
@@ -203,6 +296,10 @@ async function viewCoin(sym) {
     text:
       `<b>${coin(sym)}</b>\n\n` +
       `Цена: <b>${money(t.last)} $</b> (${signed(ch)}% за 24ч)\n` +
+      (second
+        ? `Сверка бирж: OKX ${money(t.last)} $ · ${second.name} ${money(second.price)} $ ` +
+          `(разница ${(Math.abs(t.last - second.price) / t.last * 100).toFixed(2)}%)\n`
+        : "") +
       `Диапазон 24ч: ${money(t.low24h)} — ${money(t.high24h)} $\n` +
       `Оборот 24ч: ${short(t.volUsd)} $\n` +
       (trend ? `Тренд: ${trend}\n` : "") +
@@ -315,9 +412,13 @@ function viewHelp(arg) {
         "Каждой монете — равная доля капитала. Только спот, без плеча.\n\n" +
         "Торгую 6 крупнейших монет: BTC, ETH, SOL, XRP, DOGE, TRX. Ещё 7 " +
         "наблюдаю, но не торгую — на истории они проигрывают.\n\n" +
+        "🛡 <b>Защита денег</b>:\n" +
+        "• стоп-лосс — выход при −10% от входа\n" +
+        "• трейлинг-стоп — выход при −20% от максимума\n" +
+        "• BTC-фильтр — не покупаю, пока биткоин ниже своего тренда\n\n" +
         "Проверка на 2 годах истории (бычий + медвежий рынок): " +
-        "<b>+64.6%</b> против +21.9% у «просто держать те же монеты». " +
-        "Максимальная просадка была ~35% — к такому надо быть готовым.\n\n" +
+        "<b>+83.5%</b> против +25% у «просто держать те же монеты». " +
+        "Максимальная просадка была ~27% — к такому надо быть готовым.\n\n" +
         "⚠️ Прошлые результаты не гарантируют будущих.",
       keyboard: kb([[["⏰ Расписание", "hp:schedule"], ["← Помощь", "hp"]], [["← Меню", "menu"]]]),
     };

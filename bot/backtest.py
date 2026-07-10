@@ -42,20 +42,34 @@ def run(data):
 
     pf = Portfolio(START_CASH)
     equity_curve = []
+    need_reset = set()
 
     for ts in common_ts:
         if ts < warmup_ts:
             continue
         prices = {sym: data[sym][index[sym][ts]]["close"] for sym in strategy.SYMBOLS}
+        i_btc = index["BTC-USDT"][ts]
+        mkt_ok = strategy.market_ok(prices["BTC-USDT"], indicators["BTC-USDT"]["ema"][i_btc])
         for sym in strategy.SYMBOLS:
             i = index[sym][ts]
-            sig = strategy.signal_at(indicators[sym], i, prices[sym], pf.positions.get(sym))
+            price = prices[sym]
+            pos = pf.positions.get(sym)
+            if pos is not None:
+                pos["high"] = max(pos.get("high") or pos["entry"], price)
+            elif sym in need_reset:
+                e = indicators[sym]["ema"][i]
+                if e is not None and price < e * (1 + strategy.BAND):
+                    need_reset.discard(sym)
+                continue
+            sig = strategy.signal_at(indicators[sym], i, price, pos, allow_buy=mkt_ok)
             if sig is None:
                 continue
             if sig["action"] == "buy":
-                pf.buy(sym, prices[sym], ts, prices)
+                pf.buy(sym, price, ts, prices)
             else:
-                pf.sell(sym, prices[sym], ts, sig["reason"])
+                pf.sell(sym, price, ts, sig["reason"])
+                if sig.get("stop"):
+                    need_reset.add(sym)
         equity_curve.append(pf.equity(prices))
 
     return pf, equity_curve, common_ts[common_ts.index(warmup_ts):]

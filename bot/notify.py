@@ -32,3 +32,33 @@ def send(text):
     except Exception as e:  # уведомление не должно ронять запуск
         print(f"Ошибка отправки в Telegram: {e}")
         return False
+
+
+def send_photo(png_bytes, caption=""):
+    """Фото с подписью. Multipart собираем вручную, чтобы не тянуть requests."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        print(f"[telegram выключен] фото {len(png_bytes)} байт: {caption}")
+        return False
+    boundary = "----botboundary7351"
+    parts = b""
+    for name, value in (("chat_id", chat_id), ("caption", caption), ("parse_mode", "HTML")):
+        parts += (
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+        ).encode()
+    parts += (
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"photo\"; "
+        f"filename=\"chart.png\"\r\nContent-Type: image/png\r\n\r\n"
+    ).encode() + png_bytes + f"\r\n--{boundary}--\r\n".encode()
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendPhoto",
+        data=parts,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode()).get("ok", False)
+    except Exception as e:
+        print(f"Ошибка отправки фото: {e}")
+        return False

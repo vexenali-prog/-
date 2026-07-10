@@ -9,12 +9,27 @@
 
 import json
 import os
+import urllib.request
 from datetime import datetime, timedelta, timezone
 
 from bot import strategy
+from bot.chart import equity_png
 from bot.data import fetch_history
-from bot.notify import send
+from bot.notify import send, send_photo
 from bot.portfolio import Portfolio
+
+CONTROL_URL = "https://shturman-bot.shturman-vexen.workers.dev/control"
+NEAR_SIGNAL = 0.007      # «почти сигнал»: до триггера меньше 0.7%
+HEADS_UP_COOLDOWN_H = 12  # не повторять предупреждение чаще, чем раз в 12 ч
+
+
+def buying_paused():
+    """Флаг паузы из меню (Cloudflare KV). При любой ошибке торгуем как обычно."""
+    try:
+        with urllib.request.urlopen(CONTROL_URL, timeout=10) as r:
+            return bool(json.load(r).get("paused"))
+    except Exception:
+        return False
 
 STATE_PATH = os.path.join(os.path.dirname(__file__), "..", "state", "paper_state.json")
 START_CASH = 1000.0
@@ -32,6 +47,9 @@ def load_state():
         "trades": [],
         "equity_history": [],
         "last_daily_report": "",
+        "last_weekly_report": "",
+        "baseline_prices": {},
+        "heads_up": {},
     }
 
 
@@ -67,6 +85,33 @@ def fmt_qty(q):
     return f"{q:.6g}"
 
 
+def check_heads_up(state, out, sym, ema_val, price, position, ts):
+    """Предупреждение «монета в шаге от сигнала», не чаще раза в 12 часов."""
+    if ema_val is None:
+        return
+    if position is None:
+        trigger = ema_val * (1 + strategy.BAND)
+        near = price < trigger and price > trigger * (1 - NEAR_SIGNAL)
+        key, text = sym + ":buy", (
+            f"💡 <b>{sym.replace('-USDT', '')}</b> почти дорос до покупки: "
+            f"{fmt_money(price)} $, до триггера {(trigger / price - 1) * 100:.2f}%"
+        )
+    else:
+        trigger = ema_val * (1 - strategy.BAND)
+        near = price > trigger and price < trigger * (1 + NEAR_SIGNAL)
+        key, text = sym + ":sell", (
+            f"💡 <b>{sym.replace('-USDT', '')}</b> близок к продаже: "
+            f"{fmt_money(price)} $, до триггера {(1 - trigger / price) * 100:.2f}%"
+        )
+    if not near:
+        return
+    last = state.setdefault("heads_up", {}).get(key, 0)
+    if ts - last < HEADS_UP_COOLDOWN_H * 3_600_000:
+        return
+    state["heads_up"][key] = ts
+    out.append(text)
+
+
 def main():
     state = load_state()
     pf = Portfolio(state["cash"])
@@ -79,23 +124,45 @@ def main():
             raise RuntimeError(f"{sym}: мало данных ({len(candles[sym])})")
 
     prices = {sym: candles[sym][-1]["close"] for sym in strategy.SYMBOLS}
+    if not state.get("baseline_prices"):  # цены первого запуска — для сравнения с buy&hold
+        state["baseline_prices"] = {s: prices[s] for s in strategy.SYMBOLS}
     events = []
+    heads_up = []
+    paused = buying_paused()
+    reset = state.setdefault("need_reset", {})
+
+    btc_ind = strategy.compute(candles["BTC-USDT"])
+    mkt_ok = strategy.market_ok(prices["BTC-USDT"], btc_ind["ema"][-1])
 
     for sym in strategy.SYMBOLS:
         ind = strategy.compute(candles[sym])
         i = len(candles[sym]) - 1
         ts = candles[sym][i]["ts"]
-        sig = strategy.signal_at(ind, i, prices[sym], pf.positions.get(sym))
+        price = prices[sym]
+        pos = pf.positions.get(sym)
+        if pos is not None:
+            pos["high"] = max(pos.get("high") or pos["entry"], price)
+        elif sym in reset:
+            # после стопа ждём, пока цена уйдёт под полосу покупки
+            e = ind["ema"][i]
+            if e is not None and price < e * (1 + strategy.BAND):
+                del reset[sym]
+            continue
+
+        sig = strategy.signal_at(ind, i, price, pos, allow_buy=mkt_ok and not paused)
         if sig is None:
+            check_heads_up(state, heads_up, sym, ind["ema"][i], price, pos, ts)
             continue
         if sig["action"] == "buy":
-            pos = pf.buy(sym, prices[sym], ts, prices)
+            pos = pf.buy(sym, price, ts, prices)
             if pos:
                 events.append(("buy", {"symbol": sym, **pos}))
         else:
-            trade = pf.sell(sym, prices[sym], ts, sig["reason"])
+            trade = pf.sell(sym, price, ts, sig["reason"])
             if trade:
                 events.append(("sell", trade))
+                if sig.get("stop"):
+                    reset[sym] = True
 
     equity = pf.equity(prices)
     now = datetime.now(timezone.utc)
@@ -144,6 +211,8 @@ def main():
             + f"\n\n💼 Портфель: <b>{fmt_money(equity)} $</b>"
             + f" · свободно {fmt_money(pf.cash)} $ (виртуальные)"
         )
+    if heads_up:
+        send("\n".join(heads_up) + "\n<i>Решение бот примет на закрытии часа.</i>")
 
     today = now.strftime("%Y-%m-%d")
     if now.hour >= DAILY_REPORT_HOUR_UTC and state["last_daily_report"] != today:
@@ -158,7 +227,7 @@ def main():
             f"({(prices[sym] / p['entry'] - 1) * 100:+.1f}%)"
             for sym, p in pf.positions.items()
         ] or ["• нет открытых позиций — сидим в кэше и ждём тренда"]
-        send(
+        text = (
             f"📊 <b>Утренняя сводка</b> <i>(виртуальный счёт)</i>\n\n"
             f"Портфель: <b>{fmt_money(equity)} $</b> ({total_ret:+.1f}% от старта, "
             f"{equity - START_CASH:+.2f} $)\n"
@@ -167,6 +236,33 @@ def main():
             f"Сделок закрыто: {len(closed)}"
             + (f", прибыльных {wins} ({wins / len(closed) * 100:.0f}%), "
                f"итог по ним {sum(t['pnl'] for t in closed):+.2f} $" if closed else "")
+        )
+        png = equity_png(state["equity_history"], START_CASH)
+        if png:
+            send_photo(png, text)
+        else:
+            send(text)
+
+    # недельный отчёт — по воскресеньям, вместе с утренней сводкой
+    week_id = f"{now.isocalendar().year}-{now.isocalendar().week}"
+    if (now.weekday() == 6 and now.hour >= DAILY_REPORT_HOUR_UTC
+            and state.get("last_weekly_report") != week_id):
+        state["last_weekly_report"] = week_id
+        base = state.get("baseline_prices") or {}
+        bh_parts = [prices[s] / base[s] for s in strategy.SYMBOLS if base.get(s)]
+        bh_ret = (sum(bh_parts) / len(bh_parts) - 1) * 100 if bh_parts else 0.0
+        week_ago = int((now - timedelta(days=7)).timestamp() * 1000)
+        week_trades = [t for t in state["trades"] if t["closed_ts"] >= week_ago]
+        week_pnl = sum(t["pnl"] for t in week_trades)
+        send(
+            f"🗓 <b>Итоги недели</b>\n\n"
+            f"Портфель: <b>{fmt_money(equity)} $</b> ({(equity / START_CASH - 1) * 100:+.1f}% "
+            f"с самого старта)\n"
+            f"Если бы просто купили и держали эти монеты: {bh_ret:+.1f}%\n\n"
+            f"Сделок за неделю: {len(week_trades)}"
+            + (f", результат {week_pnl:+.2f} $" if week_trades else "")
+            + "\n\n<i>Мало сделок — это нормально: трендовая стратегия "
+              "ждёт сильных движений, а не торгует каждый день.</i>"
         )
 
     save_state(state)

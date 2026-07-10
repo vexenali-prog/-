@@ -27,7 +27,7 @@ class Portfolio:
         if qty * price < 10:  # не открываем позиции меньше 10 USDT
             return None
         self.cash -= qty * price * (1 + strategy.FEE)
-        pos = {"qty": qty, "entry": price, "opened_ts": ts}
+        pos = {"qty": qty, "entry": price, "opened_ts": ts, "high": price}
         self.positions[symbol] = pos
         return pos
 

@@ -3,3 +3,7 @@ main = "worker.js"
 compatibility_date = "2026-06-01"
 
 # Секрет BOT_TOKEN добавляется командой: wrangler secret put BOT_TOKEN
+
+[[kv_namespaces]]
+binding = "CONTROL"
+id = "63571effe5f141c9ac19ceac5329750c"
