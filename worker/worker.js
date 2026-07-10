@@ -54,16 +54,20 @@ export default {
     return new Response("ok");
   },
 
-  // Сторож (Cloudflare cron): GitHub Actions может тихо пропускать
-  // запуски по расписанию — если данные протухли, сообщаем владельцу.
+  // Крон Cloudflare (каждые 5 минут): проверка ценовых алертов
+  // и сторож часового бота в GitHub Actions.
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(watchdog(env));
+    ctx.waitUntil(Promise.all([watchdog(env), checkAlerts(env)]));
   },
 };
 
 const STALE_AFTER_MS = 2.5 * 3600 * 1000; // ждём минимум 2 пропущенных часа
 const ALERT_COOLDOWN_MS = 6 * 3600 * 1000;
+const DISPATCH_COOLDOWN_MS = 40 * 60 * 1000;
 
+// Сторож: GitHub Actions может тихо пропускать запуски по расписанию.
+// Если есть GH_TOKEN — сторож сам перезапускает workflow; сообщение
+// владельцу шлётся только когда перезапуск невозможен или не помогает.
 async function watchdog(env) {
   try {
     const state = await getState();
@@ -71,6 +75,33 @@ async function watchdog(env) {
     const lastTs = points.length ? points[points.length - 1].ts : 0;
     const age = Date.now() - lastTs;
     if (age < STALE_AFTER_MS) return;
+
+    if (env.GH_TOKEN) {
+      const lastDispatch = parseInt((await env.CONTROL.get("dispatch_ts")) || "0", 10);
+      if (Date.now() - lastDispatch > DISPATCH_COOLDOWN_MS) {
+        const r = await fetch(
+          "https://api.github.com/repos/vexenali-prog/-/actions/workflows/paper-bot.yml/dispatches",
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer " + env.GH_TOKEN,
+              Accept: "application/vnd.github+json",
+              "User-Agent": "shturman-bot-watchdog",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ ref: "main" }),
+          }
+        );
+        if (r.status === 204) {
+          await env.CONTROL.put("dispatch_ts", String(Date.now()));
+          return; // перезапустили сами, владельца не беспокоим
+        }
+        console.log("dispatch failed:", r.status, await r.text());
+      } else {
+        return; // недавно перезапускали — ждём результата
+      }
+    }
+
     const lastAlert = parseInt((await env.CONTROL.get("stale_alert_ts")) || "0", 10);
     if (Date.now() - lastAlert < ALERT_COOLDOWN_MS) return;
     await env.CONTROL.put("stale_alert_ts", String(Date.now()));
@@ -79,10 +110,11 @@ async function watchdog(env) {
       chat_id: OWNER_CHAT,
       parse_mode: "HTML",
       text:
-        `⚠️ <b>Часовой бот молчит ~${hours} ч</b>\n\n` +
-        "GitHub Actions пропускает запуски по расписанию (у бесплатных " +
-        "репозиториев такое бывает). Открытые позиции без присмотра!\n\n" +
-        "Запустить вручную: репозиторий → Actions → Paper trading bot → Run workflow\n" +
+        `⚠️ <b>Часовой бот молчит ~${hours} ч</b>` +
+        (env.GH_TOKEN ? " (автоперезапуск не помог)" : "") +
+        "\n\nGitHub Actions пропускает запуски по расписанию. " +
+        "Открытые позиции без присмотра!\n\n" +
+        "Запустить вручную: Actions → Paper trading bot → Run workflow\n" +
         "https://github.com/vexenali-prog/-/actions/workflows/paper-bot.yml",
     });
   } catch (e) {
@@ -90,10 +122,43 @@ async function watchdog(env) {
   }
 }
 
+async function checkAlerts(env) {
+  try {
+    const alerts = await getAlerts(env);
+    if (!alerts.length) return;
+    const tickers = await getTickers();
+    const keep = [];
+    for (const a of alerts) {
+      const p = tickers[a.sym]?.last;
+      const hit = p && (a.dir === "above" ? p >= a.target : p <= a.target);
+      if (!hit) {
+        keep.push(a);
+        continue;
+      }
+      await tg(env, "sendMessage", {
+        chat_id: OWNER_CHAT,
+        parse_mode: "HTML",
+        text:
+          `🔔 <b>${coin(a.sym)}</b> ${a.dir === "above" ? "поднялся выше" : "опустился ниже"} ` +
+          `<b>${money(a.target)} $</b>\nСейчас: ${money(p)} $`,
+      });
+    }
+    if (keep.length !== alerts.length) {
+      await env.CONTROL.put("alerts", JSON.stringify(keep));
+    }
+  } catch (e) {
+    console.log("checkAlerts error:", e.stack || e.message);
+  }
+}
+
 async function handleUpdate(update, env) {
   if (update.callback_query) {
     const cq = update.callback_query;
     let route = cq.data;
+    // менять алерты может только владелец, остальным — просто список
+    if (/^al:(add|del|new)/.test(route) && cq.message.chat.id !== OWNER_CHAT) {
+      route = "al";
+    }
     if (route === "tgl") {
       // тумблер паузы: только владелец
       if (cq.message.chat.id === OWNER_CHAT) {
@@ -115,10 +180,37 @@ async function handleUpdate(update, env) {
   }
   const msg = update.message;
   if (!msg || !msg.text) return;
+
+  // текстовая команда «алерт BTC 70000» (только владелец)
+  const m = msg.text.match(/^\/?(?:алерт|alert)\s+([a-zа-яё]+)\s+([\d\s.,]+)$/i);
+  if (m && msg.chat.id === OWNER_CHAT) {
+    const sym = m[1].toUpperCase() + "-USDT";
+    const target = parseFloat(m[2].replace(/\s/g, "").replace(",", "."));
+    let text;
+    if (!SYMBOLS.includes(sym)) {
+      text = `Не знаю монету «${m[1]}». Я слежу за: ${SYMBOLS.map(coin).join(", ")}.`;
+    } else if (!target || target <= 0) {
+      text = "Не понял цену. Пример: <code>алерт BTC 70000</code>";
+    } else {
+      const price = (await getTickers())[sym]?.last;
+      const dir = target >= price ? "above" : "below";
+      const alerts = await getAlerts(env);
+      alerts.push({ sym, target, dir });
+      await env.CONTROL.put("alerts", JSON.stringify(alerts.slice(0, 20)));
+      text =
+        `🔔 Готово! Сообщу, когда <b>${coin(sym)}</b> ` +
+        `${dir === "above" ? "поднимется выше" : "опустится ниже"} ` +
+        `<b>${money(target)} $</b> (сейчас ${money(price)} $).`;
+    }
+    await tg(env, "sendMessage", { chat_id: msg.chat.id, text, parse_mode: "HTML" });
+    return;
+  }
+
   const cmd = msg.text.split(/[@\s]/)[0];
   const route = {
     "/start": "menu", "/portfolio": "pf", "/prices": "px",
     "/signals": "sg", "/stats": "st", "/help": "hp", "/market": "mk",
+    "/alerts": "al",
   }[cmd] || "menu";
   const view = await render(route, env);
   await tg(env, "sendMessage", {
@@ -130,7 +222,8 @@ async function handleUpdate(update, env) {
 }
 
 async function render(route, env) {
-  const [page, arg] = route.split(":");
+  const [page, ...rest] = route.split(":");
+  const arg = rest[0];
   switch (page) {
     case "pf": return viewPortfolio();
     case "px": return arg ? viewCoin(arg) : viewPrices();
@@ -138,6 +231,7 @@ async function render(route, env) {
     case "st": return viewStats();
     case "tr": return viewTrades(parseInt(arg || "0", 10));
     case "mk": return viewMarket();
+    case "al": return viewAlerts(env, rest);
     case "hp": return viewHelp(arg);
     default: return viewMenu(env);
   }
@@ -189,7 +283,80 @@ async function viewMenu(env) {
       [["💼 Портфель", "pf"], ["📈 Цены", "px"]],
       [["🧭 Сигналы", "sg"], ["🌡 Рынок", "mk"]],
       [["📊 Статистика", "st"], ["🧾 Сделки", "tr:0"]],
-      [[paused ? "▶️ Возобновить покупки" : "⏸ Пауза покупок", "tgl"], ["ℹ️ Помощь", "hp"]],
+      [["🔔 Алерты", "al"], [paused ? "▶️ Возобновить" : "⏸ Пауза", "tgl"]],
+      [["ℹ️ Помощь", "hp"]],
+    ]),
+  };
+}
+
+// ---------- ценовые алерты (хранятся в KV, проверяются кроном) ----------
+
+async function getAlerts(env) {
+  try {
+    return JSON.parse((await env.CONTROL.get("alerts")) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+async function viewAlerts(env, args) {
+  const [action, p1, p2] = args || [];
+  let alerts = await getAlerts(env);
+
+  if (action === "new" && p1) {
+    const tickers = await getTickers();
+    const price = tickers[p1]?.last;
+    const presets = [-10, -5, -3, 3, 5, 10];
+    return {
+      text:
+        `🔔 <b>Алерт по ${coin(p1)}</b>\n\n` +
+        `Сейчас: <b>${money(price)} $</b>\n\n` +
+        "О какой цене сообщить? Выбери уровень от текущей цены — " +
+        "или напиши сообщением свою, например:\n" +
+        `<code>алерт ${coin(p1)} ${money(price * 1.07).replace(/ /g, " ")}</code>`,
+      keyboard: kb([
+        presets.slice(0, 3).map((p) => [`${p}%`, `al:add:${p1}:${p}`]),
+        presets.slice(3).map((p) => [`+${p}%`, `al:add:${p1}:${p}`]),
+        [["← Монета", "px:" + p1], ["← Алерты", "al"]],
+      ]),
+    };
+  }
+
+  if (action === "add" && p1 && p2) {
+    const tickers = await getTickers();
+    const price = tickers[p1]?.last;
+    if (price) {
+      const pct = parseFloat(p2);
+      const target = price * (1 + pct / 100);
+      alerts.push({ sym: p1, target, dir: pct >= 0 ? "above" : "below" });
+      await env.CONTROL.put("alerts", JSON.stringify(alerts.slice(0, 20)));
+    }
+  }
+
+  if (action === "del" && p1 !== undefined) {
+    alerts.splice(parseInt(p1, 10), 1);
+    await env.CONTROL.put("alerts", JSON.stringify(alerts));
+  }
+
+  const tickers = alerts.length ? await getTickers() : {};
+  const lines = alerts.map((a, i) => {
+    const now = tickers[a.sym]?.last;
+    return (
+      `${i + 1}. <b>${coin(a.sym)}</b> ${a.dir === "above" ? "выше" : "ниже"} ` +
+      `${money(a.target)} $` + (now ? ` <i>(сейчас ${money(now)} $)</i>` : "")
+    );
+  });
+  const delRow = alerts.map((a, i) => [`❌ ${i + 1}`, `al:del:${i}`]);
+  return {
+    text:
+      "🔔 <b>Ценовые алерты</b>\n\n" +
+      (lines.length
+        ? lines.join("\n") + "\n\n<i>Проверяю каждые 5 минут, сообщу и удалю сработавший.</i>"
+        : "Пока нет ни одного. Открой монету в «Ценах» и нажми «🔔 Алерт», " +
+          "или напиши сообщением, например: <code>алерт BTC 70000</code>"),
+    keyboard: kb([
+      ...(delRow.length ? [delRow] : []),
+      [["📈 Цены", "px"], ["← Меню", "menu"]],
     ]),
   };
 }
@@ -346,7 +513,10 @@ async function viewCoin(sym) {
           ? "\n⚪ Не в портфеле"
           : "\n👁 Наблюдение: показываю, но не торгую") +
       "\n\n<i>Цена живая; тренд — по последнему часовому расчёту.</i>",
-    keyboard: kb([[["🔄 Обновить", "px:" + sym], ["← Цены", "px"]], [["← Меню", "menu"]]]),
+    keyboard: kb([
+      [["🔄 Обновить", "px:" + sym], ["🔔 Алерт", "al:new:" + sym]],
+      [["← Цены", "px"], ["← Меню", "menu"]],
+    ]),
   };
 }
 
@@ -458,6 +628,27 @@ function viewHelp(arg) {
       keyboard: kb([[["⏰ Расписание", "hp:schedule"], ["← Помощь", "hp"]], [["← Меню", "menu"]]]),
     };
   }
+  if (arg === "real") {
+    return {
+      text:
+        "🚀 <b>Чек-лист перехода на реальный счёт</b>\n\n" +
+        "Когда paper-режим отработает месяц и результат будет на уровне " +
+        "или лучше «купи и держи» — вот безопасный путь:\n\n" +
+        "1️⃣ <b>Сумма</b> — начать со 100–200 $, которые не страшно потерять " +
+        "целиком. Не больше, какими бы красивыми ни были цифры теста.\n\n" +
+        "2️⃣ <b>API-ключи биржи</b> — с правами только «чтение + торговля». " +
+        "Право «вывод средств» НЕ давать никому и никогда, включая бота.\n\n" +
+        "3️⃣ <b>Лимит потерь</b> — заранее решить: минус 25% от стартовой " +
+        "суммы — стоп, разбор полётов, а не «сейчас отыграется».\n\n" +
+        "4️⃣ <b>Месяц параллельно</b> — реальный счёт торгует рядом с " +
+        "виртуальным: сверяем, совпадают ли сделки и цены исполнения.\n\n" +
+        "5️⃣ <b>Только спот, без плеча</b> — маржа и фьючерсы умеют " +
+        "обнулить счёт быстрее, чем сработает любой стоп.\n\n" +
+        "⚠️ И главное: даже после всех проверок прибыль не гарантирована. " +
+        "Торгуй только тем, что готов потерять.",
+      keyboard: kb([[["📖 Стратегия", "hp:strategy"], ["← Помощь", "hp"]], [["← Меню", "menu"]]]),
+    };
+  }
   if (arg === "schedule") {
     return {
       text:
@@ -483,7 +674,7 @@ function viewHelp(arg) {
       "Выбери, что рассказать подробнее:",
     keyboard: kb([
       [["📖 Стратегия", "hp:strategy"], ["⏰ Расписание", "hp:schedule"]],
-      [["← Меню", "menu"]],
+      [["🚀 Реальный счёт", "hp:real"], ["← Меню", "menu"]],
     ]),
   };
 }
@@ -507,11 +698,14 @@ function money(x) {
 }
 
 function signed(x) {
-  return (x >= 0 ? "+" : "") + x.toFixed(1);
+  return ((x >= 0 ? "+" : "") + x.toFixed(1)).replace(".", ",");
 }
 
 function signed2(x) {
-  return (x >= 0 ? "+" : "") + x.toFixed(2);
+  const s = (x >= 0 ? "+" : "") + Math.abs(x).toLocaleString("ru-RU", {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  });
+  return x < 0 ? s.replace("+", "−") : s;
 }
 
 function qty(q) {

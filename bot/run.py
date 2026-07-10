@@ -60,7 +60,16 @@ def save_state(state):
 
 
 def fmt_money(x):
-    return f"{x:,.2f}".replace(",", " ")
+    """1234.5 -> «1 234,50»: разряды пробелами, десятичные через запятую."""
+    return f"{x:,.2f}".replace(",", " ").replace(".", ",")
+
+
+def fmt_signed_money(x):
+    return ("+" if x >= 0 else "−") + fmt_money(abs(x)) + " $"
+
+
+def fmt_pct(x, digits=1):
+    return ("+" if x >= 0 else "−") + f"{abs(x):.{digits}f}".replace(".", ",") + "%"
 
 
 MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня",
@@ -82,7 +91,7 @@ def fmt_dur(ms):
 
 
 def fmt_qty(q):
-    return f"{q:.6g}"
+    return f"{q:.6g}".replace(".", ",")
 
 
 def check_heads_up(state, out, sym, ema_val, price, position, ts):
@@ -94,14 +103,14 @@ def check_heads_up(state, out, sym, ema_val, price, position, ts):
         near = price < trigger and price > trigger * (1 - NEAR_SIGNAL)
         key, text = sym + ":buy", (
             f"💡 <b>{sym.replace('-USDT', '')}</b> почти дорос до покупки: "
-            f"{fmt_money(price)} $, до триггера {(trigger / price - 1) * 100:.2f}%"
+            f"{fmt_money(price)} $, до триггера {fmt_pct((trigger / price - 1) * 100, 2)}"
         )
     else:
         trigger = ema_val * (1 - strategy.BAND)
         near = price > trigger and price < trigger * (1 + NEAR_SIGNAL)
         key, text = sym + ":sell", (
             f"💡 <b>{sym.replace('-USDT', '')}</b> близок к продаже: "
-            f"{fmt_money(price)} $, до триггера {(1 - trigger / price) * 100:.2f}%"
+            f"{fmt_money(price)} $, до триггера {fmt_pct((1 - trigger / price) * 100, 2)}"
         )
     if not near:
         return
@@ -202,7 +211,7 @@ def main():
                 f"продал по {fmt_money(e['exit'])} $\n"
                 f"Вложено {fmt_money(invested)} $ → получено {fmt_money(received)} $ "
                 f"(держал {fmt_dur(e['closed_ts'] - e['opened_ts'])})\n"
-                f"Итог: <b>{e['pnl']:+.2f} $ ({e['pnl_pct']:+.2f}%)</b>\n"
+                f"Итог: <b>{fmt_signed_money(e['pnl'])} ({fmt_pct(e['pnl_pct'], 2)})</b>\n"
                 f"Почему продал: {e['reason']}"
             )
     if lines:
@@ -224,18 +233,18 @@ def main():
             f"• <b>{sym.replace('-USDT', '')}</b>: куплено {fmt_dt(p['opened_ts'])} "
             f"на {fmt_money(p['qty'] * p['entry'] * (1 + strategy.FEE))} $ → "
             f"сейчас {fmt_money(p['qty'] * prices[sym])} $ "
-            f"({(prices[sym] / p['entry'] - 1) * 100:+.1f}%)"
+            f"({fmt_pct((prices[sym] / p['entry'] - 1) * 100)})"
             for sym, p in pf.positions.items()
         ] or ["• нет открытых позиций — сидим в кэше и ждём тренда"]
         text = (
             f"📊 <b>Утренняя сводка</b> <i>(виртуальный счёт)</i>\n\n"
-            f"Портфель: <b>{fmt_money(equity)} $</b> ({total_ret:+.1f}% от старта, "
-            f"{equity - START_CASH:+.2f} $)\n"
+            f"Портфель: <b>{fmt_money(equity)} $</b> ({fmt_pct(total_ret)} от старта, "
+            f"{fmt_signed_money(equity - START_CASH)})\n"
             f"Свободно: {fmt_money(pf.cash)} $\n\n"
             f"Что держим:\n" + "\n".join(pos_lines) + "\n\n"
             f"Сделок закрыто: {len(closed)}"
             + (f", прибыльных {wins} ({wins / len(closed) * 100:.0f}%), "
-               f"итог по ним {sum(t['pnl'] for t in closed):+.2f} $" if closed else "")
+               f"итог по ним {fmt_signed_money(sum(t['pnl'] for t in closed))}" if closed else "")
         )
         png = equity_png(state["equity_history"], START_CASH)
         if png:
@@ -256,14 +265,45 @@ def main():
         week_pnl = sum(t["pnl"] for t in week_trades)
         send(
             f"🗓 <b>Итоги недели</b>\n\n"
-            f"Портфель: <b>{fmt_money(equity)} $</b> ({(equity / START_CASH - 1) * 100:+.1f}% "
+            f"Портфель: <b>{fmt_money(equity)} $</b> ({fmt_pct((equity / START_CASH - 1) * 100)} "
             f"с самого старта)\n"
-            f"Если бы просто купили и держали эти монеты: {bh_ret:+.1f}%\n\n"
+            f"Если бы просто купили и держали эти монеты: {fmt_pct(bh_ret)}\n\n"
             f"Сделок за неделю: {len(week_trades)}"
-            + (f", результат {week_pnl:+.2f} $" if week_trades else "")
+            + (f", результат {fmt_signed_money(week_pnl)}" if week_trades else "")
             + "\n\n<i>Мало сделок — это нормально: трендовая стратегия "
               "ждёт сильных движений, а не торгует каждый день.</i>"
         )
+
+    # месячный отчёт — первого числа: разбор всех сделок прошедшего месяца
+    month_id = now.strftime("%Y-%m")
+    if (now.day == 1 and now.hour >= DAILY_REPORT_HOUR_UTC
+            and state.get("last_monthly_report") != month_id):
+        state["last_monthly_report"] = month_id
+        month_ago = int((now - timedelta(days=31)).timestamp() * 1000)
+        mt = [t for t in state["trades"] if t["closed_ts"] >= month_ago]
+        parts = [
+            f"🗓 <b>Итоги месяца</b>\n",
+            f"Портфель: <b>{fmt_money(equity)} $</b> "
+            f"({fmt_pct((equity / START_CASH - 1) * 100)} от старта)",
+        ]
+        if mt:
+            wins_m = [t for t in mt if t["pnl"] > 0]
+            stops = [t for t in mt if "стоп" in t["reason"]]
+            best = max(mt, key=lambda t: t["pnl"])
+            worst = min(mt, key=lambda t: t["pnl"])
+            parts += [
+                f"Сделок за месяц: {len(mt)}, прибыльных {len(wins_m)}, "
+                f"итог {fmt_signed_money(sum(t['pnl'] for t in mt))}",
+                f"Сработало стопов: {len(stops)} — они ограничили убытки на "
+                f"{fmt_money(sum(-t['pnl'] for t in stops))} $" if stops else "Стопы не понадобились",
+                f"Лучшая: {best['symbol'].replace('-USDT', '')} "
+                f"{fmt_signed_money(best['pnl'])} ({fmt_pct(best['pnl_pct'])})",
+                f"Худшая: {worst['symbol'].replace('-USDT', '')} "
+                f"{fmt_signed_money(worst['pnl'])} ({fmt_pct(worst['pnl_pct'])})",
+            ]
+        else:
+            parts.append("Сделок в этом месяце не было — бот ждал сигналов.")
+        send("\n".join(parts))
 
     save_state(state)
     print(f"OK: equity={equity:.2f} USDT, события: {len(events)}")
