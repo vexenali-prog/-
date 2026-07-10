@@ -15,6 +15,8 @@ const STATE_URL =
 const OKX_TICKERS = "https://www.okx.com/api/v5/market/tickers?instType=SPOT";
 const START_CASH = 1000;
 const BAND = 0.02;
+const STOP = 0.10;   // те же параметры, что в bot/strategy.py
+const TRAIL = 0.20;
 
 // Торгуемые монеты (топ по капитализации) и полный список наблюдения.
 const TRADED = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT", "TRX-USDT"];
@@ -32,6 +34,18 @@ export default {
     if (request.method === "GET" && new URL(request.url).pathname === "/control") {
       const paused = (await env.CONTROL.get("paused")) === "1";
       return Response.json({ paused });
+    }
+    if (request.method === "GET") {
+      const path = new URL(request.url).pathname;
+      if (path === "/" || path === "/index.html") {
+        return new Response(await dashboardHtml(), {
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "public, max-age=60",
+          },
+        });
+      }
+      return new Response("ok");
     }
     if (request.method !== "POST") return new Response("ok");
     if (
@@ -232,6 +246,7 @@ async function render(route, env) {
     case "tr": return viewTrades(parseInt(arg || "0", 10));
     case "mk": return viewMarket();
     case "al": return viewAlerts(env, rest);
+    case "dc": return viewDecisions(env);
     case "hp": return viewHelp(arg);
     default: return viewMenu(env);
   }
@@ -285,7 +300,7 @@ async function viewMenu(env) {
       [["🧭 Сигналы", "sg"], ["🌡 Рынок", "mk"]],
       [["📊 Статистика", "st"], ["🧾 Сделки", "tr:0"]],
       [["🔔 Алерты", "al"], [paused ? "▶️ Возобновить" : "⏸ Пауза", "tgl"]],
-      [["ℹ️ Помощь", "hp"]],
+      [["🧠 Решения", "dc"], ["ℹ️ Помощь", "hp"]],
     ]),
   };
 }
@@ -359,6 +374,81 @@ async function viewAlerts(env, args) {
       ...(delRow.length ? [delRow] : []),
       [["📈 Цены", "px"], ["← Меню", "menu"]],
     ]),
+  };
+}
+
+// «Почему система сейчас делает именно это» — по каждой торгуемой монете.
+async function viewDecisions(env) {
+  const [state, tickers, paused] = await Promise.all([
+    getState(),
+    getTickers(),
+    env ? env.CONTROL.get("paused").then((v) => v === "1") : false,
+  ]);
+  const ind = state.indicators || {};
+  const btc = ind["BTC-USDT"];
+  const btcLive = tickers["BTC-USDT"]?.last;
+  const btcOk = btc && btcLive ? btcLive > btc.ema : true;
+
+  const head = [];
+  if (paused) head.push("⏸ Покупки приостановлены вручную (кнопка «Пауза»).");
+  head.push(
+    btcOk
+      ? "🔓 Рыночный фильтр: BTC выше тренда — новые покупки разрешены."
+      : "🔒 Рыночный фильтр: BTC ниже тренда — новые покупки запрещены, только сопровождение позиций."
+  );
+
+  const lines = TRADED.map((sym) => {
+    const t = tickers[sym];
+    const i = ind[sym];
+    const pos = (state.positions || {})[sym];
+    if (!t || !i) return `• <b>${coin(sym)}</b> — жду первого расчёта`;
+
+    if (pos) {
+      const high = pos.high || pos.entry;
+      const exitTrend = i.ema * (1 - BAND);
+      const exitStop = pos.entry * (1 - STOP);
+      const exitTrail = high * (1 - TRAIL);
+      const exits = [
+        [exitTrend, "тренд"],
+        [exitStop, "стоп"],
+        [exitTrail, "трейлинг"],
+      ].sort((a, b) => b[0] - a[0]);
+      const [lvl, why] = exits[0];
+      return (
+        `🟢 <b>${coin(sym)}</b> — в портфеле (${signed((t.last / pos.entry - 1) * 100)}%)\n` +
+        `   продажа, если цена закрепится ниже ${money(lvl)} $ (${why}); ` +
+        `запас ${signed((t.last / lvl - 1) * 100)}%`
+      );
+    }
+    if ((state.need_reset || {})[sym]) {
+      return (
+        `🔄 <b>${coin(sym)}</b> — вышли по стопу, сигнал «перезаряжается»:\n` +
+        `   жду отката ниже ${money(i.ema * (1 + BAND))} $, потом можно заново`
+      );
+    }
+    const trigger = i.ema * (1 + BAND);
+    const gap = (trigger / t.last - 1) * 100;
+    if (gap <= 0) {
+      return (
+        `🟡 <b>${coin(sym)}</b> — цена уже выше триггера ${money(trigger)} $:\n` +
+        `   покупка на ближайшем закрытии часа` +
+        (btcOk && !paused ? "" : " (как только снимутся ограничения выше)")
+      );
+    }
+    return (
+      `⚪ <b>${coin(sym)}</b> — вне рынка\n` +
+      `   куплю выше ${money(trigger)} $, до триггера ${signed(gap)}%`
+    );
+  });
+
+  return {
+    text:
+      "🧠 <b>Дневник решений</b>\n\n" +
+      head.join("\n") + "\n\n" +
+      lines.join("\n") +
+      "\n\n<i>Решения принимаются раз в час по закрытой свече. " +
+      "Уровни пересчитываются каждый час.</i>",
+    keyboard: kb([[["🔄 Обновить", "dc"], ["💼 Портфель", "pf"]], [["← Меню", "menu"]]]),
   };
 }
 
@@ -678,6 +768,96 @@ function viewHelp(arg) {
       [["🚀 Реальный счёт", "hp:real"], ["← Меню", "menu"]],
     ]),
   };
+}
+
+// ---------- веб-дашборд (GET /) ----------
+
+function svgChart(points, w, h) {
+  if (points.length < 2) return "";
+  const vals = points.map((p) => p.equity);
+  const min = Math.min(...vals, START_CASH);
+  const max = Math.max(...vals, START_CASH);
+  const pad = (max - min) * 0.1 || 1;
+  const y = (v) => h - ((v - min + pad) / (max - min + 2 * pad)) * h;
+  const x = (i) => (i / (points.length - 1)) * w;
+  const line = vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const up = vals[vals.length - 1] >= START_CASH;
+  const color = up ? "#22c55e" : "#ef4444";
+  const yStart = y(START_CASH).toFixed(1);
+  return (
+    `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">` +
+    `<line x1="0" y1="${yStart}" x2="${w}" y2="${yStart}" stroke="#3b4658" stroke-dasharray="6 6" stroke-width="1"/>` +
+    `<polyline points="${line}" fill="none" stroke="${color}" stroke-width="2.5" ` +
+    `stroke-linejoin="round" stroke-linecap="round"/></svg>`
+  );
+}
+
+async function dashboardHtml() {
+  let state = {}, tickers = {};
+  try {
+    [state, tickers] = await Promise.all([getState(), getTickers()]);
+  } catch {}
+  const positions = Object.entries(state.positions || {});
+  let held = 0;
+  const rows = positions.map(([sym, pos]) => {
+    const price = tickers[sym]?.last ?? pos.entry;
+    const value = pos.qty * price;
+    const cost = pos.qty * pos.entry * 1.001;
+    held += value;
+    const pnl = (value / cost - 1) * 100;
+    return (
+      `<tr><td>${coin(sym)}</td><td>${when(pos.opened_ts)}</td>` +
+      `<td>${money(cost)} $</td><td>${money(value)} $</td>` +
+      `<td class="${pnl >= 0 ? "up" : "down"}">${signed(pnl)}%</td></tr>`
+    );
+  });
+  const equity = (state.cash || 0) + held;
+  const total = (equity / START_CASH - 1) * 100;
+  const trades = state.trades || [];
+  const wins = trades.filter((t) => t.pnl > 0).length;
+  const hist = state.equity_history || [];
+  const upd = hist.length ? when(hist[hist.length - 1].ts) : "—";
+
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vexen Capital</title><style>
+:root{color-scheme:dark}
+*{margin:0;box-sizing:border-box}
+body{background:#0a1220;color:#edf0f5;font:16px/1.55 -apple-system,'Segoe UI',Roboto,sans-serif;padding:24px 16px 48px;max-width:760px;margin:0 auto}
+h1{font-size:26px;letter-spacing:3px;margin-top:8px}
+h1 span{color:#c9a227}
+.sub{color:#8b96a8;font-size:13px;letter-spacing:1px;text-transform:uppercase;margin-bottom:28px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:24px}
+.card{background:#111b2e;border:1px solid #1e2a40;border-radius:12px;padding:14px 16px}
+.card .l{color:#8b96a8;font-size:12px;text-transform:uppercase;letter-spacing:1px}
+.card .v{font-size:22px;font-weight:600;margin-top:4px}
+.up{color:#22c55e}.down{color:#ef4444}
+.chart{background:#111b2e;border:1px solid #1e2a40;border-radius:12px;padding:16px;margin-bottom:24px}
+.chart svg{width:100%;height:180px;display:block}
+table{width:100%;border-collapse:collapse;background:#111b2e;border:1px solid #1e2a40;border-radius:12px;overflow:hidden}
+th,td{padding:10px 12px;text-align:left;font-size:14px}
+th{color:#8b96a8;font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #1e2a40}
+tr+tr td{border-top:1px solid #17233a}
+.note{color:#8b96a8;font-size:13px;margin-top:24px}
+h2{font-size:15px;color:#8b96a8;text-transform:uppercase;letter-spacing:1px;margin:0 0 10px}
+</style></head><body>
+<h1>VEXEN <span>CAPITAL</span></h1>
+<div class="sub">Алгоритмическая торговая система · тестовый режим</div>
+<div class="cards">
+<div class="card"><div class="l">Капитал</div><div class="v">${money(equity)} $</div></div>
+<div class="card"><div class="l">Результат</div><div class="v ${total >= 0 ? "up" : "down"}">${signed(total)}%</div></div>
+<div class="card"><div class="l">Свободно</div><div class="v">${money(state.cash || 0)} $</div></div>
+<div class="card"><div class="l">Сделок закрыто</div><div class="v">${trades.length}${trades.length ? ` <small style="font-size:13px;color:#8b96a8">(${Math.round((wins / trades.length) * 100)}% в плюс)</small>` : ""}</div></div>
+</div>
+<div class="chart"><h2>Динамика капитала</h2>${svgChart(hist, 700, 180) || '<div class="note">Недостаточно данных для графика — история накапливается.</div>'}</div>
+<h2>Открытые позиции</h2>
+${rows.length
+    ? `<table><tr><th>Актив</th><th>Открыта</th><th>Вложено</th><th>Сейчас</th><th>P&L</th></tr>${rows.join("")}</table>`
+    : '<div class="note">Открытых позиций нет — капитал в резерве, система ждёт сигналов.</div>'}
+<div class="note">Виртуальный капитал, реальные рыночные цены (OKX). Стратегия: следование за трендом
+со стоп-лоссом, трейлинг-стопом и фильтром рыночного режима. Обновлено: ${upd} (Баку).
+Время на странице — бакинское. Не является инвестиционной рекомендацией.</div>
+</body></html>`;
 }
 
 // ---------- утилиты ----------
