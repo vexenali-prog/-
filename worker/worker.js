@@ -53,7 +53,42 @@ export default {
     }
     return new Response("ok");
   },
+
+  // Сторож (Cloudflare cron): GitHub Actions может тихо пропускать
+  // запуски по расписанию — если данные протухли, сообщаем владельцу.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(watchdog(env));
+  },
 };
+
+const STALE_AFTER_MS = 2.5 * 3600 * 1000; // ждём минимум 2 пропущенных часа
+const ALERT_COOLDOWN_MS = 6 * 3600 * 1000;
+
+async function watchdog(env) {
+  try {
+    const state = await getState();
+    const points = state.equity_history || [];
+    const lastTs = points.length ? points[points.length - 1].ts : 0;
+    const age = Date.now() - lastTs;
+    if (age < STALE_AFTER_MS) return;
+    const lastAlert = parseInt((await env.CONTROL.get("stale_alert_ts")) || "0", 10);
+    if (Date.now() - lastAlert < ALERT_COOLDOWN_MS) return;
+    await env.CONTROL.put("stale_alert_ts", String(Date.now()));
+    const hours = Math.round(age / 3600000);
+    await tg(env, "sendMessage", {
+      chat_id: OWNER_CHAT,
+      parse_mode: "HTML",
+      text:
+        `⚠️ <b>Часовой бот молчит ~${hours} ч</b>\n\n` +
+        "GitHub Actions пропускает запуски по расписанию (у бесплатных " +
+        "репозиториев такое бывает). Открытые позиции без присмотра!\n\n" +
+        "Запустить вручную: репозиторий → Actions → Paper trading bot → Run workflow\n" +
+        "https://github.com/vexenali-prog/-/actions/workflows/paper-bot.yml",
+    });
+  } catch (e) {
+    console.log("watchdog error:", e.stack || e.message);
+  }
+}
 
 async function handleUpdate(update, env) {
   if (update.callback_query) {
