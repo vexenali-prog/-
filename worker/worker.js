@@ -23,7 +23,7 @@ const TRADED = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT", "TR
 const SYMBOLS = [
   ...TRADED,
   "ADA-USDT", "LINK-USDT", "AVAX-USDT", "DOT-USDT", "LTC-USDT",
-  "BCH-USDT", "ETC-USDT",
+  "BCH-USDT", "ETC-USDT", "GRAM-USDT",
 ];
 
 // Чат владельца: только он может ставить бота на паузу.
@@ -75,9 +75,12 @@ export default {
   },
 };
 
-const STALE_AFTER_MS = 2.5 * 3600 * 1000; // ждём минимум 2 пропущенных часа
+// Перезапускаем бота уже после ~80 минут тишины (один пропущенный час),
+// владельца тревожим только если тишина затянулась на 3.5 часа.
+const STALE_AFTER_MS = 80 * 60 * 1000;
+const ALERT_AFTER_MS = 3.5 * 3600 * 1000;
 const ALERT_COOLDOWN_MS = 6 * 3600 * 1000;
-const DISPATCH_COOLDOWN_MS = 40 * 60 * 1000;
+const DISPATCH_COOLDOWN_MS = 25 * 60 * 1000;
 
 // Сторож: GitHub Actions может тихо пропускать запуски по расписанию.
 // Если есть GH_TOKEN — сторож сам перезапускает workflow; сообщение
@@ -111,13 +114,15 @@ async function watchdog(env) {
         );
         if (r.status === 204) {
           await env.CONTROL.put("dispatch_ts", String(Date.now()));
-          return; // перезапустили сами, владельца не беспокоим
+          if (age < ALERT_AFTER_MS) return; // перезапустили сами, владельца не беспокоим
+        } else {
+          console.log("dispatch failed:", r.status, await r.text());
         }
-        console.log("dispatch failed:", r.status, await r.text());
-      } else {
+      } else if (age < ALERT_AFTER_MS) {
         return; // недавно перезапускали — ждём результата
       }
     }
+    if (age < ALERT_AFTER_MS) return;
 
     const lastAlert = parseInt((await env.CONTROL.get("stale_alert_ts")) || "0", 10);
     if (Date.now() - lastAlert < ALERT_COOLDOWN_MS) return;
@@ -620,7 +625,9 @@ async function viewSignals() {
     const t = tickers[sym];
     const ind = (state.indicators || {})[sym];
     const pos = (state.positions || {})[sym];
-    if (!t || !ind) return `⚪ <b>${coin(sym)}</b> — ждём первого расчёта`;
+    if (!t || !ind) {
+      return `👁 <b>${coin(sym)}</b> — новая монета, накапливаю историю тренда (~30 дней)`;
+    }
     const dist = (t.last / ind.ema - 1) * 100;
     if (!TRADED.includes(sym)) {
       return `👁 <b>${coin(sym)}</b> — наблюдаю (${signed(dist)}% к тренду), не торгуется`;

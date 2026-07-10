@@ -129,7 +129,9 @@ def main():
     candles = {}
     for sym in strategy.WATCHLIST:
         candles[sym] = fetch_history(sym, "1H", CANDLES_NEEDED, confirmed_only=True)
-        if len(candles[sym]) < strategy.WARMUP:
+        if len(candles[sym]) < strategy.WARMUP and sym in strategy.SYMBOLS:
+            # для торгуемых монет короткая история фатальна; наблюдаемые
+            # (свежелистнутые вроде GRAM) просто ждут накопления свечей
             raise RuntimeError(f"{sym}: мало данных ({len(candles[sym])})")
 
     prices = {sym: candles[sym][-1]["close"] for sym in strategy.SYMBOLS}
@@ -186,6 +188,7 @@ def main():
             "ts": candles[sym][-1]["ts"],
         }
         for sym in strategy.WATCHLIST
+        if len(candles[sym]) >= strategy.WARMUP  # у новых монет тренда ещё нет
     }
     state["trades"].extend(pf.trades)
     state["equity_history"].append({"ts": int(now.timestamp() * 1000), "equity": round(equity, 2)})

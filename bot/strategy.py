@@ -24,9 +24,11 @@ SYMBOLS = [
 ]
 
 # Наблюдаемые монеты: показываются в меню (цены, тренд), но не торгуются.
+# GRAM (бывший TON) залистлен на OKX заново в июне 2026 — истории мало,
+# тренд появится, когда накопится ~30 дней свечей.
 WATCHLIST = SYMBOLS + [
     "ADA-USDT", "LINK-USDT", "AVAX-USDT", "DOT-USDT", "LTC-USDT",
-    "BCH-USDT", "ETC-USDT",
+    "BCH-USDT", "ETC-USDT", "GRAM-USDT",
 ]
 
 EMA_PERIOD = 700   # ~29 дней на часовых свечах
