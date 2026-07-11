@@ -250,10 +250,8 @@ def main():
                f"итог по ним {fmt_signed_money(sum(t['pnl'] for t in closed))}" if closed else "")
         )
         png = equity_png(state["equity_history"], START_CASH)
-        if png:
-            send_photo(png, text)
-        else:
-            send(text)
+        if not (png and send_photo(png, text)):
+            send(text)  # без графика, но сводка дойдёт обязательно
 
     # недельный отчёт — по воскресеньям, вместе с утренней сводкой
     week_id = f"{now.isocalendar().year}-{now.isocalendar().week}"

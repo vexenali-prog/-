@@ -68,12 +68,57 @@ export default {
     return new Response("ok");
   },
 
-  // Крон Cloudflare (каждые 5 минут): проверка ценовых алертов
-  // и сторож часового бота в GitHub Actions.
+  // Кроны Cloudflare:
+  //  - каждый час в :01 — плановый запуск торгового цикла (GitHub-cron
+  //    ненадёжен, поэтому расписание держим на себе);
+  //  - каждые 5 минут — алерты и сторож на случай, если и это не помогло.
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(Promise.all([watchdog(env), checkAlerts(env)]));
+    if (event.cron === "1 * * * *") {
+      ctx.waitUntil(hourlyKick(env));
+    } else {
+      ctx.waitUntil(Promise.all([watchdog(env), checkAlerts(env)]));
+    }
   },
 };
+
+async function dispatchWorkflow(env) {
+  if (!env.GH_TOKEN) return false;
+  const r = await fetch(
+    "https://api.github.com/repos/vexenali-prog/-/actions/workflows/paper-bot.yml/dispatches",
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + env.GH_TOKEN,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "shturman-bot-watchdog",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ref: "main" }),
+    }
+  );
+  if (r.status === 204) {
+    await env.CONTROL.put("dispatch_ts", String(Date.now()));
+    return true;
+  }
+  console.log("dispatch failed:", r.status, await r.text());
+  return false;
+}
+
+// Плановый часовой запуск: свеча закрылась минуту назад — торгуем.
+// Если бот уже отработал в последние 40 минут (GitHub-cron всё же жив),
+// не дёргаем его повторно.
+async function hourlyKick(env) {
+  try {
+    const state = await getState();
+    await env.CONTROL.put("state_cache", JSON.stringify(state));
+    const points = state.equity_history || [];
+    const lastTs = points.length ? points[points.length - 1].ts : 0;
+    if (Date.now() - lastTs < 40 * 60 * 1000) return;
+    await dispatchWorkflow(env);
+  } catch (e) {
+    console.log("hourlyKick error:", e.stack || e.message);
+  }
+}
 
 // Перезапускаем бота уже после ~80 минут тишины (один пропущенный час),
 // владельца тревожим только если тишина затянулась на 3.5 часа.
@@ -99,24 +144,8 @@ async function watchdog(env) {
     if (env.GH_TOKEN) {
       const lastDispatch = parseInt((await env.CONTROL.get("dispatch_ts")) || "0", 10);
       if (Date.now() - lastDispatch > DISPATCH_COOLDOWN_MS) {
-        const r = await fetch(
-          "https://api.github.com/repos/vexenali-prog/-/actions/workflows/paper-bot.yml/dispatches",
-          {
-            method: "POST",
-            headers: {
-              Authorization: "Bearer " + env.GH_TOKEN,
-              Accept: "application/vnd.github+json",
-              "User-Agent": "shturman-bot-watchdog",
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ ref: "main" }),
-          }
-        );
-        if (r.status === 204) {
-          await env.CONTROL.put("dispatch_ts", String(Date.now()));
+        if (await dispatchWorkflow(env)) {
           if (age < ALERT_AFTER_MS) return; // перезапустили сами, владельца не беспокоим
-        } else {
-          console.log("dispatch failed:", r.status, await r.text());
         }
       } else if (age < ALERT_AFTER_MS) {
         return; // недавно перезапускали — ждём результата
