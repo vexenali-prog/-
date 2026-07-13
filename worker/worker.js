@@ -755,7 +755,7 @@ async function viewStats(env) {
       `Итог: <b>${signed((equity / START_CASH - 1) * 100)}%</b> (${signed2(equity - START_CASH)} $)\n\n` +
       `Сделок закрыто: ${trades.length}\n` +
       (trades.length
-        ? `Заработано на закрытых: ${signed2(realized)} $\n` +
+        ? `Итог по закрытым: ${signed2(realized)} $\n` +
           `Прибыльных: ${wins.length} из ${trades.length} (${Math.round((wins.length / trades.length) * 100)}%)\n` +
           `Лучшая: ${signed(best)}% · Худшая: ${signed(worst)}%\n`
         : "") +
@@ -999,10 +999,9 @@ function signed(x) {
 }
 
 function signed2(x) {
-  const s = (x >= 0 ? "+" : "") + Math.abs(x).toLocaleString("ru-RU", {
+  return (x >= 0 ? "+" : "−") + Math.abs(x).toLocaleString("ru-RU", {
     minimumFractionDigits: 2, maximumFractionDigits: 2,
   });
-  return x < 0 ? s.replace("+", "−") : s;
 }
 
 function qty(q) {
