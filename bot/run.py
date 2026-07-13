@@ -121,6 +121,66 @@ def check_heads_up(state, out, sym, ema_val, price, position, ts):
     out.append(text)
 
 
+def build_daily_summary(state, pf, prices, candles, equity, mkt_ok, now):
+    """Утренний брифинг: что изменилось за сутки и что делал бот."""
+    total_ret = (equity / START_CASH - 1) * 100
+    day_ago_ms = int((now - timedelta(hours=24)).timestamp() * 1000)
+
+    # изменение капитала за сутки — по истории equity
+    day_delta = ""
+    older = [p for p in state["equity_history"] if p["ts"] <= day_ago_ms]
+    if older:
+        prev = older[-1]["equity"]
+        day_delta = (f"\nЗа сутки: <b>{fmt_signed_money(equity - prev)}</b> "
+                     f"({fmt_pct((equity / prev - 1) * 100)})")
+
+    # суточное движение каждой торгуемой монеты — по свечам
+    day_moves = {}
+    for sym in strategy.SYMBOLS:
+        c = candles[sym]
+        if len(c) > 25:
+            day_moves[sym] = (c[-1]["close"] / c[-25]["close"] - 1) * 100
+
+    lines = [
+        f"☀️ <b>Доброе утро! {fmt_dt(int(now.timestamp() * 1000)).split(',')[0]}</b>",
+        "",
+        f"💼 <b>{fmt_money(equity)} $</b> ({fmt_pct(total_ret)} от старта)" + day_delta,
+        "",
+    ]
+
+    # что бот делал за сутки
+    day_trades = [t for t in state["trades"] if t["closed_ts"] >= day_ago_ms]
+    if day_trades:
+        pnl = sum(t["pnl"] for t in day_trades)
+        names = ", ".join(t["symbol"].replace("-USDT", "") for t in day_trades)
+        lines.append(f"🤝 Сделки за сутки: {names} · итог {fmt_signed_money(pnl)}")
+    else:
+        lines.append(f"🤝 Сделок за сутки нет — сопровождаю {len(pf.positions)} позиций")
+
+    if day_moves:
+        best = max(day_moves, key=day_moves.get)
+        worst = min(day_moves, key=day_moves.get)
+        lines.append(
+            f"📈 Движение дня: {best.replace('-USDT', '')} {fmt_pct(day_moves[best])} · "
+            f"{worst.replace('-USDT', '')} {fmt_pct(day_moves[worst])}")
+
+    if pf.positions:
+        pos_bits = [
+            f"{sym.replace('-USDT', '')} {fmt_pct((prices[sym] / p['entry'] - 1) * 100)}"
+            for sym, p in sorted(pf.positions.items(),
+                                 key=lambda kv: prices[kv[0]] / kv[1]["entry"],
+                                 reverse=True)
+        ]
+        lines.append(f"💰 Позиции ({len(pos_bits)}): " + " · ".join(pos_bits)
+                     + f" · кэш {fmt_money(pf.cash)} $")
+    else:
+        lines.append(f"💰 Позиций нет — {fmt_money(pf.cash)} $ в кэше, жду сигналов")
+
+    lines.append("🌍 Рынок: BTC " + ("выше тренда 🔓 покупки разрешены"
+                                     if mkt_ok else "ниже тренда 🔒 покупки закрыты"))
+    return "\n".join(lines)
+
+
 def main():
     state = load_state()
     pf = Portfolio(state["cash"])
@@ -229,26 +289,7 @@ def main():
     today = now.strftime("%Y-%m-%d")
     if now.hour >= DAILY_REPORT_HOUR_UTC and state["last_daily_report"] != today:
         state["last_daily_report"] = today
-        total_ret = (equity / START_CASH - 1) * 100
-        closed = state["trades"]
-        wins = sum(1 for t in closed if t["pnl"] > 0)
-        pos_lines = [
-            f"• <b>{sym.replace('-USDT', '')}</b>: куплено {fmt_dt(p['opened_ts'])} "
-            f"на {fmt_money(p['qty'] * p['entry'] * (1 + strategy.FEE))} $ → "
-            f"сейчас {fmt_money(p['qty'] * prices[sym])} $ "
-            f"({fmt_pct((prices[sym] / p['entry'] - 1) * 100)})"
-            for sym, p in pf.positions.items()
-        ] or ["• нет открытых позиций — сидим в кэше и ждём тренда"]
-        text = (
-            f"📊 <b>Утренняя сводка</b> <i>(виртуальный счёт)</i>\n\n"
-            f"Портфель: <b>{fmt_money(equity)} $</b> ({fmt_pct(total_ret)} от старта, "
-            f"{fmt_signed_money(equity - START_CASH)})\n"
-            f"Свободно: {fmt_money(pf.cash)} $\n\n"
-            f"Что держим:\n" + "\n".join(pos_lines) + "\n\n"
-            f"Сделок закрыто: {len(closed)}"
-            + (f", прибыльных {wins} ({wins / len(closed) * 100:.0f}%), "
-               f"итог по ним {fmt_signed_money(sum(t['pnl'] for t in closed))}" if closed else "")
-        )
+        text = build_daily_summary(state, pf, prices, candles, equity, mkt_ok, now)
         png = equity_png(state["equity_history"], START_CASH)
         if not (png and send_photo(png, text)):
             send(text)  # без графика, но сводка дойдёт обязательно
