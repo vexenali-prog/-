@@ -47,12 +47,31 @@ STOP = 0.10    # стоп-лосс: выход при -10% от входа
 TRAIL = 0.20   # трейлинг-стоп: выход при -20% от максимума с момента входа
 BTC_FILTER = True  # покупки только когда BTC выше своей EMA
 
+# Фильтр объёма: вход только когда часовой объём выше среднего за 20 дней —
+# движению «на тишине» не верим. Проверен на 2-летнем (9 монет) и
+# 4.2-летнем (ядро) окнах: доходность выше, просадка ниже на всех
+# порогах 1.25-2.0 (плато, не подгонка).
+VOLUME_MULT = 1.5
+VOLUME_WINDOW = 480  # 20 дней часовых свечей
+
 WARMUP = EMA_PERIOD + 10  # минимум свечей до первого сигнала
 
 
 def compute(candles):
     closes = [c["close"] for c in candles]
     return {"ema": ema(closes, EMA_PERIOD)}
+
+
+def volume_ok(candles, i=None):
+    """Объём подтверждает движение: текущая свеча против среднего за 20 дней."""
+    if not VOLUME_MULT:
+        return True
+    i = len(candles) - 1 if i is None else i
+    lo = max(0, i - VOLUME_WINDOW)
+    window = [c["volume"] for c in candles[lo:i]]
+    if len(window) < VOLUME_WINDOW // 2:
+        return True  # мало истории — фильтр не мешает
+    return candles[i]["volume"] > VOLUME_MULT * (sum(window) / len(window))
 
 
 def market_ok(btc_price, btc_ema):

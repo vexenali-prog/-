@@ -220,7 +220,9 @@ def main():
                 del reset[sym]
             continue
 
-        sig = strategy.signal_at(ind, i, price, pos, allow_buy=mkt_ok and not paused)
+        allow = mkt_ok and not paused and (
+            pos is not None or strategy.volume_ok(candles[sym], i))
+        sig = strategy.signal_at(ind, i, price, pos, allow_buy=allow)
         if sig is None:
             check_heads_up(state, heads_up, sym, ind["ema"][i], price, pos, ts)
             continue

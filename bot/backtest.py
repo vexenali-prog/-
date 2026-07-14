@@ -61,7 +61,8 @@ def run(data):
                 if e is not None and price < e * (1 + strategy.BAND):
                     need_reset.discard(sym)
                 continue
-            sig = strategy.signal_at(indicators[sym], i, price, pos, allow_buy=mkt_ok)
+            allow = mkt_ok and (pos is not None or strategy.volume_ok(data[sym], i))
+            sig = strategy.signal_at(indicators[sym], i, price, pos, allow_buy=allow)
             if sig is None:
                 continue
             if sig["action"] == "buy":
