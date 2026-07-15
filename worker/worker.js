@@ -577,10 +577,15 @@ async function viewMarket() {
 
 async function viewPortfolio(env) {
   const [state, tickers] = await Promise.all([getStateSafe(env), getTickersSafe()]);
+  const live = Object.keys(tickers).length > 0;
   let held = 0;
   const lines = [];
   for (const [sym, pos] of Object.entries(state.positions || {})) {
-    const price = tickers[sym]?.last ?? pos.entry;
+    // без живой цены берём последний часовой расчёт, а не цену входа —
+    // иначе портфель врёт «всё по нулям», как будто рынок замер
+    const price = tickers[sym]?.last
+      ?? (state.indicators || {})[sym]?.close
+      ?? pos.entry;
     const value = pos.qty * price;
     const cost = pos.qty * pos.entry * 1.001; // потрачено с комиссией
     held += value;
@@ -596,10 +601,12 @@ async function viewPortfolio(env) {
   return {
     text:
       "💼 <b>Портфель</b> <i>(виртуальный)</i>\n\n" +
+      (live ? "" : "⚠️ <b>Биржа не ответила</b> — цены по последнему часовому " +
+                   "расчёту. Нажми «Обновить» через полминуты.\n\n") +
       `Всего: <b>${money(equity)} $</b> (${signed(total)}% от старта, ${signed2(equity - START_CASH)} $)\n` +
       `Свободно: ${money(state.cash)} $ · в монетах: ${money(held)} $\n\n` +
       (lines.length ? lines.join("\n\n") : "Открытых позиций нет — сидим в кэше и ждём тренд.") +
-      "\n\n<i>Цены — прямо сейчас с биржи. Время — по Баку.</i>",
+      (live ? "\n\n<i>Цены — прямо сейчас с биржи. Время — по Баку.</i>" : ""),
     keyboard: kb([
       [["🔄 Обновить", "pf"], ["🧾 Сделки", "tr:0"]],
       [["← Меню", "menu"]],
@@ -737,7 +744,8 @@ async function viewStats(env) {
   const [state, tickers] = await Promise.all([getStateSafe(env), getTickersSafe()]);
   let invested = 0;
   for (const [sym, pos] of Object.entries(state.positions || {})) {
-    invested += pos.qty * (tickers[sym]?.last ?? pos.entry);
+    invested += pos.qty * (tickers[sym]?.last
+      ?? (state.indicators || {})[sym]?.close ?? pos.entry);
   }
   const equity = state.cash + invested;
   const trades = state.trades || [];
@@ -919,7 +927,9 @@ h1{font-size:24px;letter-spacing:3px}h1 span{color:#c9a227}p{color:#8b96a8}</sty
   const positions = Object.entries(state.positions || {});
   let held = 0;
   const rows = positions.map(([sym, pos]) => {
-    const price = tickers[sym]?.last ?? pos.entry;
+    const price = tickers[sym]?.last
+      ?? (state.indicators || {})[sym]?.close
+      ?? pos.entry;
     const value = pos.qty * price;
     const cost = pos.qty * pos.entry * 1.001;
     held += value;
