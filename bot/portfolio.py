@@ -31,6 +31,28 @@ class Portfolio:
         self.positions[symbol] = pos
         return pos
 
+    def add_to(self, symbol, price, ts, prices):
+        """Пирамидинг: докупка PYRAMID_FRAC стандартной доли, один раз.
+
+        Вход усредняется — стоп-лосс дальше считается от среднего входа.
+        Возвращает (кол-во, потрачено) или None.
+        """
+        pos = self.positions.get(symbol)
+        if pos is None or pos.get("pyramided"):
+            return None
+        budget = min(self.cash,
+                     self.equity(prices) / len(strategy.SYMBOLS) * strategy.PYRAMID_FRAC)
+        qty = budget / (price * (1 + strategy.FEE))
+        if qty * price < 10:
+            return None
+        spent = qty * price * (1 + strategy.FEE)
+        self.cash -= spent
+        total = pos["qty"] + qty
+        pos["entry"] = (pos["entry"] * pos["qty"] + price * qty) / total
+        pos["qty"] = total
+        pos["pyramided"] = True
+        return qty, spent
+
     def sell(self, symbol, price, ts, reason):
         pos = self.positions.pop(symbol, None)
         if pos is None:

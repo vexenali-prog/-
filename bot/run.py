@@ -213,6 +213,14 @@ def main():
         pos = pf.positions.get(sym)
         if pos is not None:
             pos["high"] = max(pos.get("high") or pos["entry"], price)
+            # пирамидинг: тренд подтвердился ростом — усиливаем позицию
+            if (not pos.get("pyramided")
+                    and price >= pos["entry"] * (1 + strategy.PYRAMID_TRIGGER)):
+                add = pf.add_to(sym, price, ts, prices)
+                if add:
+                    events.append(("add", {"symbol": sym, "qty": add[0],
+                                           "spent": add[1], "price": price,
+                                           "entry": pos["entry"], "ts": ts}))
         elif sym in reset:
             # после стопа ждём, пока цена уйдёт под полосу покупки
             e = ind["ema"][i]
@@ -258,6 +266,15 @@ def main():
 
     lines = []
     for kind, e in events:
+        if kind == "add":
+            lines.append(
+                f"📈 <b>ДОКУПИЛ {e['symbol'].replace('-USDT', '')}</b> · {fmt_dt(e['ts'])} (Баку)\n"
+                f"Тренд подтвердился ростом +{strategy.PYRAMID_TRIGGER:.0%} — усиливаю позицию\n"
+                f"Добавлено: {fmt_qty(e['qty'])} монет на {fmt_money(e['spent'])} $ "
+                f"по {fmt_money(e['price'])} $\n"
+                f"Средний вход теперь: {fmt_money(e['entry'])} $"
+            )
+            continue
         if kind == "buy":
             spent = e["qty"] * e["entry"] * (1 + strategy.FEE)
             lines.append(

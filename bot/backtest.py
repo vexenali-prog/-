@@ -56,6 +56,9 @@ def run(data):
             pos = pf.positions.get(sym)
             if pos is not None:
                 pos["high"] = max(pos.get("high") or pos["entry"], price)
+                if (not pos.get("pyramided")
+                        and price >= pos["entry"] * (1 + strategy.PYRAMID_TRIGGER)):
+                    pf.add_to(sym, price, ts, prices)
             elif sym in need_reset:
                 e = indicators[sym]["ema"][i]
                 if e is not None and price < e * (1 + strategy.BAND):
