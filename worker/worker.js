@@ -179,6 +179,22 @@ async function watchdog(env) {
 
 async function checkAlerts(env) {
   try {
+    // разовые напоминания (KV: reminders = [{ts, text}])
+    const remRaw = await env.CONTROL.get("reminders");
+    if (remRaw) {
+      const rems = JSON.parse(remRaw);
+      const due = rems.filter((r) => Date.now() >= r.ts);
+      if (due.length) {
+        for (const r of due) {
+          await tg(env, "sendMessage", {
+            chat_id: OWNER_CHAT, parse_mode: "HTML", text: r.text,
+          });
+        }
+        await env.CONTROL.put("reminders",
+          JSON.stringify(rems.filter((r) => Date.now() < r.ts)));
+      }
+    }
+
     const alerts = await getAlerts(env);
     if (!alerts.length) return;
     const tickers = await getTickers();
