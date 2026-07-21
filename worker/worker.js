@@ -242,7 +242,8 @@ const BOTTOM_KEYBOARD = {
     [{ text: "💼 Портфель" }, { text: "📈 Цены" }],
     [{ text: "🧭 Сигналы" }, { text: "🌡 Рынок" }],
     [{ text: "📊 Статистика" }, { text: "🧠 Решения" }],
-    [{ text: "🔔 Алерты" }, { text: "🏠 Меню" }],
+    [{ text: "🔔 Алерты" }, { text: "🧾 Сделки" }],
+    [{ text: "ℹ️ Помощь" }, { text: "🏠 Меню" }],
   ],
   resize_keyboard: true,
   is_persistent: true,
@@ -252,6 +253,7 @@ const TEXT_ROUTES = {
   "💼 Портфель": "pf", "📈 Цены": "px", "🧭 Сигналы": "sg",
   "🌡 Рынок": "mk", "📊 Статистика": "st", "🧠 Решения": "dc",
   "🔔 Алерты": "al", "🏠 Меню": "menu",
+  "🧾 Сделки": "tr:0", "ℹ️ Помощь": "hp",
 };
 
 async function handleUpdate(update, env) {
