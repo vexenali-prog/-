@@ -43,6 +43,10 @@ WATCHLIST = SYMBOLS + [
     "ONDO-USDT", "TIA-USDT", "JUP-USDT",
     # мало истории на OKX (релисты) + второй золотой токен
     "ZEC-USDT", "PAXG-USDT",
+    # радар моментума 21.07: в сильном тренде прямо сейчас, истории для
+    # экзамена ещё нет — наблюдаем, копим свечи
+    "ALLO-USDT", "KAITO-USDT", "LIT-USDT", "LDO-USDT", "PUMP-USDT",
+    "VIRTUAL-USDT", "AAVE-USDT",
 ]
 
 EMA_PERIOD = 700   # ~29 дней на часовых свечах

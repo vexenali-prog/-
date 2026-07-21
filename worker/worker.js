@@ -30,6 +30,8 @@ const SYMBOLS = [
   "PEPE-USDT", "BNB-USDT", "NEAR-USDT", "HBAR-USDT", "UNI-USDT", "TAO-USDT",
   "SHIB-USDT", "OP-USDT", "APT-USDT", "ICP-USDT", "ALGO-USDT", "INJ-USDT",
   "ONDO-USDT", "TIA-USDT", "JUP-USDT", "ZEC-USDT", "PAXG-USDT",
+  "ALLO-USDT", "KAITO-USDT", "LIT-USDT", "LDO-USDT", "PUMP-USDT",
+  "VIRTUAL-USDT", "AAVE-USDT",
 ];
 
 // Чат владельца: только он может ставить бота на паузу.
