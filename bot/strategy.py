@@ -25,6 +25,10 @@ from bot.indicators import ema
 SYMBOLS = [
     "BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT", "TRX-USDT",
     "SUI-USDT", "ARB-USDT", "XLM-USDT",
+    # XAUT — токен на физическое золото. Скрининг: +35% за 2 года при
+    # просадке -19%; в корзине улучшает и доходность (+128% против +124%),
+    # и просадку (-27% против -31%), причём в обеих половинах истории.
+    "XAUT-USDT",
 ]
 
 # Наблюдаемые монеты: показываются в меню (цены, тренд), но не торгуются.
@@ -34,6 +38,11 @@ WATCHLIST = SYMBOLS + [
     "ADA-USDT", "LINK-USDT", "AVAX-USDT", "DOT-USDT", "LTC-USDT",
     "BCH-USDT", "ETC-USDT", "GRAM-USDT",
     "PEPE-USDT", "BNB-USDT", "NEAR-USDT", "HBAR-USDT", "UNI-USDT", "TAO-USDT",
+    # скрининг 21.07: все в минусе на своей истории (-18..-64%) — не торгуем
+    "SHIB-USDT", "OP-USDT", "APT-USDT", "ICP-USDT", "ALGO-USDT", "INJ-USDT",
+    "ONDO-USDT", "TIA-USDT", "JUP-USDT",
+    # мало истории на OKX (релисты) + второй золотой токен
+    "ZEC-USDT", "PAXG-USDT",
 ]
 
 EMA_PERIOD = 700   # ~29 дней на часовых свечах
