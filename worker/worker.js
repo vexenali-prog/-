@@ -236,6 +236,24 @@ function errorView(route) {
   };
 }
 
+// Постоянные кнопки внизу экрана (reply keyboard) — всегда под рукой.
+const BOTTOM_KEYBOARD = {
+  keyboard: [
+    [{ text: "💼 Портфель" }, { text: "📈 Цены" }],
+    [{ text: "🧭 Сигналы" }, { text: "🌡 Рынок" }],
+    [{ text: "📊 Статистика" }, { text: "🧠 Решения" }],
+    [{ text: "🔔 Алерты" }, { text: "🏠 Меню" }],
+  ],
+  resize_keyboard: true,
+  is_persistent: true,
+};
+
+const TEXT_ROUTES = {
+  "💼 Портфель": "pf", "📈 Цены": "px", "🧭 Сигналы": "sg",
+  "🌡 Рынок": "mk", "📊 Статистика": "st", "🧠 Решения": "dc",
+  "🔔 Алерты": "al", "🏠 Меню": "menu",
+};
+
 async function handleUpdate(update, env) {
   if (update.callback_query) {
     const cq = update.callback_query;
@@ -297,12 +315,21 @@ async function handleUpdate(update, env) {
     return;
   }
 
+  const btnRoute = TEXT_ROUTES[msg.text.trim()];
   const cmd = msg.text.split(/[@\s]/)[0];
-  const route = {
+  const route = btnRoute || {
     "/start": "menu", "/portfolio": "pf", "/prices": "px",
     "/signals": "sg", "/stats": "st", "/help": "hp", "/market": "mk",
     "/alerts": "al",
   }[cmd] || "menu";
+  if (cmd === "/start") {
+    // включаем постоянные кнопки внизу экрана
+    await tg(env, "sendMessage", {
+      chat_id: msg.chat.id,
+      text: "⌨️ Быстрые кнопки включены — они теперь всегда внизу экрана.",
+      reply_markup: BOTTOM_KEYBOARD,
+    });
+  }
   let view;
   try {
     view = await render(route, env);
