@@ -245,6 +245,26 @@ def main():
                 if sig.get("stop"):
                     reset[sym] = True
 
+    # скамейка запасных: наблюдаемая монета вошла в тренд — сообщить
+    wt = state.setdefault("watch_trend", {})
+    for sym in strategy.WATCHLIST:
+        if sym in strategy.SYMBOLS or len(candles[sym]) < strategy.WARMUP:
+            continue
+        w_ind = strategy.compute(candles[sym])
+        e = w_ind["ema"][-1]
+        price_w = candles[sym][-1]["close"]
+        if e is None:
+            continue
+        in_trend = price_w > e * (1 + strategy.BAND)
+        prev = wt.get(sym)
+        if in_trend and prev is False and strategy.volume_ok(candles[sym]):
+            heads_up.append(
+                f"👁 <b>{sym.replace('-USDT', '')}</b> (наблюдение) вошёл в тренд "
+                f"с объёмом: {fmt_money(price_w)} $, "
+                f"{fmt_pct((price_w / e - 1) * 100)} к средней. "
+                f"Не торгую (экзамен не сдан) — но ты просил говорить.")
+        wt[sym] = in_trend
+
     equity = pf.equity(prices)
     now = datetime.now(timezone.utc)
     state["cash"] = pf.cash
@@ -312,6 +332,21 @@ def main():
         png = equity_png(state["equity_history"], START_CASH)
         if not (png and send_photo(png, text)):
             send(text)  # без графика, но сводка дойдёт обязательно
+
+    # понедельник: радар рынка и авто-экзамены созревших монет
+    radar_week = f"radar-{now.isocalendar().year}-{now.isocalendar().week}"
+    if (now.weekday() == 0 and now.hour >= DAILY_REPORT_HOUR_UTC
+            and state.get("last_radar") != radar_week):
+        state["last_radar"] = radar_week
+        try:
+            from bot import radar
+            report = radar.weekly_radar()
+            if report:
+                send(report)
+            for msg in radar.auto_exams(state):
+                send(msg)
+        except Exception as e:  # радар не должен ронять торговлю
+            print(f"радар: ошибка {e}")
 
     # недельный отчёт — по воскресеньям, вместе с утренней сводкой
     week_id = f"{now.isocalendar().year}-{now.isocalendar().week}"
