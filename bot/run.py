@@ -33,7 +33,7 @@ def buying_paused():
 
 STATE_PATH = os.path.join(os.path.dirname(__file__), "..", "state", "paper_state.json")
 START_CASH = 1000.0
-DAILY_REPORT_HOUR_UTC = 6  # 10:00 по Баку
+DAILY_REPORT_HOUR_UTC = 7  # 10:00 по Москве (UTC+3)
 CANDLES_NEEDED = strategy.WARMUP + 40
 
 
@@ -77,8 +77,8 @@ MONTHS = ["января", "февраля", "марта", "апреля", "ма�
 
 
 def fmt_dt(ts_ms):
-    """Момент времени по Баку (UTC+4): «10 июля, 21:03»."""
-    d = datetime.fromtimestamp(ts_ms / 1000, timezone.utc) + timedelta(hours=4)
+    """Момент времени по Москве (UTC+3): «10 июля, 21:03»."""
+    d = datetime.fromtimestamp(ts_ms / 1000, timezone.utc) + timedelta(hours=3)
     return f"{d.day} {MONTHS[d.month - 1]}, {d:%H:%M}"
 
 
@@ -288,7 +288,7 @@ def main():
     for kind, e in events:
         if kind == "add":
             lines.append(
-                f"📈 <b>ДОКУПИЛ {e['symbol'].replace('-USDT', '')}</b> · {fmt_dt(e['ts'])} (Баку)\n"
+                f"📈 <b>ДОКУПИЛ {e['symbol'].replace('-USDT', '')}</b> · {fmt_dt(e['ts'])} (МСК)\n"
                 f"Тренд подтвердился ростом +{strategy.PYRAMID_TRIGGER:.0%} — усиливаю позицию\n"
                 f"Добавлено: {fmt_qty(e['qty'])} монет на {fmt_money(e['spent'])} $ "
                 f"по {fmt_money(e['price'])} $\n"
@@ -298,7 +298,7 @@ def main():
         if kind == "buy":
             spent = e["qty"] * e["entry"] * (1 + strategy.FEE)
             lines.append(
-                f"🟢 <b>КУПИЛ {e['symbol'].replace('-USDT', '')}</b> · {fmt_dt(e['opened_ts'])} (Баку)\n"
+                f"🟢 <b>КУПИЛ {e['symbol'].replace('-USDT', '')}</b> · {fmt_dt(e['opened_ts'])} (МСК)\n"
                 f"Куплено: {fmt_qty(e['qty'])} монет по {fmt_money(e['entry'])} $\n"
                 f"Потрачено: <b>{fmt_money(spent)} $</b> (с комиссией 0.1%)\n"
                 f"Почему: цена закрепилась выше тренда"
@@ -308,7 +308,7 @@ def main():
             invested = e["qty"] * e["entry"] * (1 + strategy.FEE)
             received = e["qty"] * e["exit"] * (1 - strategy.FEE)
             lines.append(
-                f"{emoji} <b>ПРОДАЛ {e['symbol'].replace('-USDT', '')}</b> · {fmt_dt(e['closed_ts'])} (Баку)\n"
+                f"{emoji} <b>ПРОДАЛ {e['symbol'].replace('-USDT', '')}</b> · {fmt_dt(e['closed_ts'])} (МСК)\n"
                 f"Купил {fmt_dt(e['opened_ts'])} по {fmt_money(e['entry'])} $, "
                 f"продал по {fmt_money(e['exit'])} $\n"
                 f"Вложено {fmt_money(invested)} $ → получено {fmt_money(received)} $ "

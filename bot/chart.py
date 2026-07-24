@@ -36,7 +36,7 @@ def equity_png(history, start_cash):
     except ImportError:
         return None
 
-    xs = [datetime.fromtimestamp(p["ts"] / 1000, timezone.utc) + timedelta(hours=4)
+    xs = [datetime.fromtimestamp(p["ts"] / 1000, timezone.utc) + timedelta(hours=3)
           for p in history]
     ys = [p["equity"] for p in history]
     last = ys[-1]
