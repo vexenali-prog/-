@@ -266,10 +266,6 @@
  ],
  "equity_history": [
   {
-   "ts": 1784700249195,
-   "equity": 998.59
-  },
-  {
    "ts": 1784703840473,
    "equity": 997.08
   },
@@ -9064,6 +9060,10 @@
   {
    "ts": 1791853490364,
    "equity": 1203.36
+  },
+  {
+   "ts": 1791854207612,
+   "equity": 1203.36
   }
  ],
  "last_daily_report": "2026-10-12",
@@ -9287,9 +9287,7 @@
   "DOGE-USDT": 0.07394,
   "TRX-USDT": 0.33222
  },
- "need_reset": {
-  "SUI-USDT": true
- },
+ "need_reset": {},
  "heads_up": {
   "BTC-USDT:buy": 1787144400000,
   "BTC-USDT:sell": 1791475200000,
