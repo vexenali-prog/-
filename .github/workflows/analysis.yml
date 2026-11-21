@@ -1,0 +1,468 @@
+# Ежедневный технический анализ -> Telegram.
+# Ничего не коммитит в репозиторий и не трогает бота: только читает свечи OKX
+# и шлёт сводку тем же ботом (секреты TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID).
+name: Daily technical analysis
+
+on:
+  schedule:
+    - cron: "5 6 * * *"   # каждый день в 06:05 UTC (09:05 по Москве)
+  workflow_dispatch:       # ручной запуск: Actions -> Daily technical analysis -> Run workflow
+
+permissions: {}
+
+jobs:
+  analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Analysis to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 - <<'PYEOF'
+          #!/usr/bin/env python3
+          # -*- coding: utf-8 -*-
+          """
+          Ежедневный технический анализ для Paper Trading Bot.
+
+          Берёт дневные свечи OKX по инструментам бота, считает классические индикаторы
+          (SMA 20/50/200, RSI(14), MACD, полосы Боллинджера, объём, моментум 7д/30д),
+          складывает их в «оценку сигнала» 0-100 и присылает сводку в Telegram.
+
+          Только стандартная библиотека. Ничего не пишет в репозиторий и не трогает
+          state/paper_state.json, так что на торговлю бота не влияет.
+          Секреты те же, что у бота: TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID. Без них
+          отчёт просто печатается в лог.
+
+          ВАЖНО: оценка сигнала - не прогноз и не торговый сигнал. Это взвешенный счёт
+          классических индикаторов, и в отличие от стратегии бота он не проходил бэктест.
+          """
+          import html
+          import json
+          import os
+          import re
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from collections import namedtuple
+          from datetime import datetime, timezone
+
+          # ---------------------------------------------------------------- НАСТРОЙКИ
+          # (подпись, инструмент на OKX). Список взят из README бота - поменяй под себя.
+          COINS = [
+              ("BTC", "BTC-USDT"), ("ETH", "ETH-USDT"), ("SOL", "SOL-USDT"),
+              ("XRP", "XRP-USDT"), ("DOGE", "DOGE-USDT"), ("TRX", "TRX-USDT"),
+              ("SUI", "SUI-USDT"), ("ARB", "ARB-USDT"), ("XLM", "XLM-USDT"),
+              ("XAUT", "XAUT-USDT"),
+          ]
+          OKX_CANDLES_URL = "https://www.okx.com/api/v5/market/candles"
+          CANDLES_LIMIT = 300        # максимум за один запрос; хватает на SMA200
+          MIN_CANDLES = 60           # меньше - анализировать нечего
+          PAUSE_SEC = 0.4            # пауза между запросами к OKX
+          TELEGRAM_LIMIT = 4000      # лимит Telegram - 4096 символов на сообщение
+          USER_AGENT = "paper-trading-bot-analysis/1.0"
+
+
+          # ---------------------------------------------------------------- СЕТЬ
+          def scrub(text, *secrets):
+              """Прячет секреты в тексте, чтобы они не попали в лог."""
+              for secret in secrets:
+                  if secret:
+                      text = text.replace(secret, "***")
+              return text
+
+
+          def http_json(url, payload=None, retries=3, timeout=20):
+              """GET (или POST, если есть payload) с JSON-ответом. Повторяет запрос
+              при сетевых сбоях, ответе 429 и ошибках сервера 5xx."""
+              headers = {"User-Agent": USER_AGENT}
+              data = None
+              if payload is not None:
+                  data = json.dumps(payload).encode("utf-8")
+                  headers["Content-Type"] = "application/json"
+              last_error = "нет ответа"
+              for attempt in range(1, retries + 1):
+                  try:
+                      request = urllib.request.Request(url, data=data, headers=headers)
+                      with urllib.request.urlopen(request, timeout=timeout) as response:
+                          return json.loads(response.read().decode("utf-8"))
+                  except urllib.error.HTTPError as exc:
+                      body = ""
+                      try:
+                          body = exc.read().decode("utf-8", "replace")[:200]
+                      except Exception:
+                          pass
+                      last_error = f"HTTP {exc.code} {body}".strip()
+                      if exc.code != 429 and exc.code < 500:
+                          raise RuntimeError(last_error)
+                  except (OSError, ValueError) as exc:      # сеть, таймаут, битый JSON
+                      last_error = f"{type(exc).__name__}: {exc}"
+                  if attempt < retries:
+                      time.sleep(2 * attempt)
+              raise RuntimeError(last_error)
+
+
+          def parse_candles(rows):
+              """Строки OKX (от новых к старым) -> [(ts_ms, close, volume)] от старых к
+              новым, только закрытые свечи. Объём берём в USDT (поле volCcy)."""
+              day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+              day_start_ms = int(day_start.timestamp() * 1000)
+              out = []
+              for row in rows:
+                  try:
+                      ts, close = int(row[0]), float(row[4])
+                      confirmed = (str(row[8]) == "1") if len(row) > 8 else ts < day_start_ms
+                      if not confirmed or close <= 0:
+                          continue
+                      volume = float(row[6]) if len(row) > 6 and row[6] not in ("", None) else float(row[5])
+                  except (ValueError, TypeError, IndexError):
+                      continue
+                  out.append((ts, close, volume))
+              out.sort()
+              return out
+
+
+          def fetch_daily(inst_id):
+              """Закрытые дневные свечи по UTC. Если OKX не знает бар 1Dutc, пробуем 1D
+              (день по гонконгскому времени) - для анализа разница несущественна."""
+              last_error = None
+              for bar in ("1Dutc", "1D"):
+                  query = urllib.parse.urlencode({"instId": inst_id, "bar": bar, "limit": CANDLES_LIMIT})
+                  payload = http_json(f"{OKX_CANDLES_URL}?{query}")
+                  if str(payload.get("code")) == "0":
+                      return parse_candles(payload.get("data") or [])
+                  last_error = payload.get("msg") or payload.get("code")
+                  if str(payload.get("code")) == "51001":      # такого инструмента нет
+                      break
+              raise RuntimeError(f"OKX: {last_error}")
+
+
+          # ---------------------------------------------------------------- ИНДИКАТОРЫ
+          def sma_last(values, n):
+              return sum(values[-n:]) / n if len(values) >= n else None
+
+
+          def ema_series(values, span):
+              """EMA как у TradingView/pandas (adjust=False): старт с первого значения."""
+              alpha = 2.0 / (span + 1)
+              out, prev = [], None
+              for x in values:
+                  prev = x if prev is None else alpha * x + (1 - alpha) * prev
+                  out.append(prev)
+              return out
+
+
+          def rsi_last(closes, period=14):
+              """RSI по Уайлдеру: первое среднее - простое за period дней, дальше сглаживание."""
+              if len(closes) <= period:
+                  return None
+              gains, losses = [], []
+              for prev, cur in zip(closes, closes[1:]):
+                  change = cur - prev
+                  gains.append(change if change > 0 else 0.0)
+                  losses.append(-change if change < 0 else 0.0)
+              avg_gain = sum(gains[:period]) / period
+              avg_loss = sum(losses[:period]) / period
+              for gain, loss in zip(gains[period:], losses[period:]):
+                  avg_gain = (avg_gain * (period - 1) + gain) / period
+                  avg_loss = (avg_loss * (period - 1) + loss) / period
+              if avg_loss == 0:
+                  return 50.0 if avg_gain == 0 else 100.0
+              return 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
+
+
+          def macd_last(closes, fast=12, slow=26, signal=9):
+              ema_fast, ema_slow = ema_series(closes, fast), ema_series(closes, slow)
+              macd_line = [a - b for a, b in zip(ema_fast, ema_slow)]
+              signal_line = ema_series(macd_line, signal)
+              return macd_line[-1], signal_line[-1], macd_line[-1] - signal_line[-1]
+
+
+          def bollinger_last(closes, n=20, k=2.0):
+              """(нижняя, средняя, верхняя); σ популяционная, как на TradingView."""
+              if len(closes) < n:
+                  return None, None, None
+              window = closes[-n:]
+              mid = sum(window) / n
+              sd = (sum((x - mid) ** 2 for x in window) / n) ** 0.5
+              return mid - k * sd, mid, mid + k * sd
+
+
+          def pct_change(values, n):
+              return (values[-1] / values[-1 - n] - 1.0) * 100.0 if len(values) > n else None
+
+
+          def compute_metrics(candles):
+              closes = [c[1] for c in candles]
+              volumes = [c[2] for c in candles]
+              macd, macd_signal, macd_hist = macd_last(closes)
+              bb_lower, bb_mid, bb_upper = bollinger_last(closes)
+              return {
+                  "date": datetime.fromtimestamp(candles[-1][0] / 1000, timezone.utc).date(),
+                  "price": closes[-1],
+                  "sma20": sma_last(closes, 20), "sma50": sma_last(closes, 50),
+                  "sma200": sma_last(closes, 200),
+                  "rsi": rsi_last(closes),
+                  "macd": macd, "macd_signal": macd_signal, "macd_hist": macd_hist,
+                  "bb_lower": bb_lower, "bb_mid": bb_mid, "bb_upper": bb_upper,
+                  "volume": volumes[-1], "volume_sma20": sma_last(volumes, 20),
+                  "pct_24h": pct_change(closes, 1), "pct_7d": pct_change(closes, 7),
+                  "pct_30d": pct_change(closes, 30),
+              }
+
+
+          # ---------------------------------------------------------------- СИГНАЛЫ
+          Signal = namedtuple("Signal", "tag verdict weight reason")
+
+
+          def evaluate_signals(m):
+              """Вердикт каждого индикатора (bullish / bearish / neutral), вес и пояснение."""
+              sig = []
+              price = m["price"]
+
+              if m["sma50"] is not None and m["sma200"] is not None:
+                  if price > m["sma50"] > m["sma200"]:
+                      sig.append(Signal("тренд", "bullish", 1.5,
+                          "Цена выше SMA50, а SMA50 выше SMA200 - восходящая структура."))
+                  elif price < m["sma50"] < m["sma200"]:
+                      sig.append(Signal("тренд", "bearish", 1.5,
+                          "Цена ниже SMA50, а SMA50 ниже SMA200 - нисходящая структура."))
+                  else:
+                      sig.append(Signal("тренд", "neutral", 1.0,
+                          "Скользящие средние разнонаправлены - чёткого тренда нет."))
+
+              if m["sma20"] is not None:
+                  if price > m["sma20"]:
+                      sig.append(Signal("SMA20", "bullish", 0.7,
+                          "Цена выше 20-дневной средней - краткосрочный импульс вверх."))
+                  else:
+                      sig.append(Signal("SMA20", "bearish", 0.7,
+                          "Цена ниже 20-дневной средней - краткосрочный импульс вниз."))
+
+              rsi = m["rsi"]
+              if rsi is not None:
+                  tag = f"RSI {rsi:.0f}"
+                  if rsi >= 70:
+                      sig.append(Signal(tag, "bearish", 1.0,
+                          f"RSI {rsi:.0f}: перекупленность (>70), выше риск коррекции."))
+                  elif rsi <= 30:
+                      sig.append(Signal(tag, "bullish", 1.0,
+                          f"RSI {rsi:.0f}: перепроданность (<30), возможен отскок."))
+                  elif rsi > 50:
+                      sig.append(Signal(tag, "bullish", 0.4,
+                          f"RSI {rsi:.0f}: выше 50, покупатели пока сильнее."))
+                  else:
+                      sig.append(Signal(tag, "bearish", 0.4,
+                          f"RSI {rsi:.0f}: ниже 50, продавцы пока сильнее."))
+
+              if m["macd"] is not None:
+                  if m["macd"] > m["macd_signal"] and m["macd_hist"] > 0:
+                      sig.append(Signal("MACD", "bullish", 1.2,
+                          "MACD выше сигнальной линии, гистограмма положительна."))
+                  elif m["macd"] < m["macd_signal"] and m["macd_hist"] < 0:
+                      sig.append(Signal("MACD", "bearish", 1.2,
+                          "MACD ниже сигнальной линии, гистограмма отрицательна."))
+                  else:
+                      sig.append(Signal("MACD", "neutral", 0.6,
+                          "MACD у пересечения с сигнальной линией - сигнал смешанный."))
+
+              if m["bb_upper"] is not None and m["bb_upper"] - m["bb_lower"] > 0:
+                  position = (price - m["bb_lower"]) / (m["bb_upper"] - m["bb_lower"])
+                  if position >= 0.95:
+                      sig.append(Signal("Боллинджер", "bearish", 0.8,
+                          "Цена у верхней полосы Боллинджера - возможен откат к средней."))
+                  elif position <= 0.05:
+                      sig.append(Signal("Боллинджер", "bullish", 0.8,
+                          "Цена у нижней полосы Боллинджера - возможен отскок к средней."))
+                  else:
+                      sig.append(Signal("Боллинджер", "neutral", 0.4,
+                          "Цена внутри полос Боллинджера, крайних значений нет."))
+
+              if m["volume_sma20"] and m["pct_24h"] is not None:
+                  ratio = m["volume"] / m["volume_sma20"]
+                  if ratio > 1.2 and m["pct_24h"] > 0:
+                      sig.append(Signal("объём", "bullish", 0.9,
+                          f"Объём в {ratio:.1f} раза выше среднего при росте цены."))
+                  elif ratio > 1.2 and m["pct_24h"] < 0:
+                      sig.append(Signal("объём", "bearish", 0.9,
+                          f"Объём в {ratio:.1f} раза выше среднего при падении цены."))
+                  else:
+                      sig.append(Signal("объём", "neutral", 0.3,
+                          "Объём близок к среднему - подтверждения движения нет."))
+
+              p7, p30 = m["pct_7d"], m["pct_30d"]
+              if p7 is not None and p30 is not None:
+                  if p7 > 0 and p30 > 0:
+                      sig.append(Signal("моментум", "bullish", 0.8,
+                          f"Рост и за 7 дней ({p7:+.1f}%), и за 30 дней ({p30:+.1f}%)."))
+                  elif p7 < 0 and p30 < 0:
+                      sig.append(Signal("моментум", "bearish", 0.8,
+                          f"Падение и за 7 дней ({p7:+.1f}%), и за 30 дней ({p30:+.1f}%)."))
+                  else:
+                      sig.append(Signal("моментум", "neutral", 0.4,
+                          f"7д ({p7:+.1f}%) и 30д ({p30:+.1f}%) разнонаправлены."))
+              return sig
+
+
+          def aggregate_score(signals):
+              """Взвешенный счёт 0-100: 50 - нейтрально, к 100 - бычий перекос, к 0 - медвежий.
+              Это НЕ вероятность, а нормированный подсчёт голосов индикаторов."""
+              bull = sum(s.weight for s in signals if s.verdict == "bullish")
+              bear = sum(s.weight for s in signals if s.verdict == "bearish")
+              total = sum(s.weight for s in signals)
+              score = 50.0 if total == 0 else 50.0 + 50.0 * (bull - bear) / total
+              return max(0.0, min(100.0, score))
+
+
+          # (нижняя граница, эмодзи, подпись)
+          BANDS = [
+              (70, "🟢", "выраженный бычий перекос"),
+              (55, "🟢", "слабый бычий перекос"),
+              (45, "🟡", "нейтрально"),
+              (30, "🔴", "слабый медвежий перекос"),
+              (-1, "🔴", "выраженный медвежий перекос"),
+          ]
+
+
+          def band_for(score):
+              """Границы как в aggregate_score исходного скрипта: >=70, >=55, >45, >30."""
+              if score >= 70:
+                  return BANDS[0]
+              if score >= 55:
+                  return BANDS[1]
+              if score > 45:
+                  return BANDS[2]
+              if score > 30:
+                  return BANDS[3]
+              return BANDS[4]
+
+
+          def analyze(label, candles):
+              metrics = compute_metrics(candles)
+              signals = evaluate_signals(metrics)
+              score = aggregate_score(signals)
+              return {"label": label, "metrics": metrics, "signals": signals, "score": score}
+
+
+          # ---------------------------------------------------------------- ОТЧЁТ
+          ARROW = {"bullish": "▲", "bearish": "▼", "neutral": "•"}
+
+
+          def format_messages(results, errors):
+              """Список сообщений для Telegram (HTML), каждое не длиннее TELEGRAM_LIMIT."""
+              lines = []
+              if results:
+                  last_date = max(r["metrics"]["date"] for r in results)
+                  lines.append("📊 <b>Технический анализ</b>")
+                  lines.append(f"Закрытые дневные свечи OKX, последняя - {last_date:%d.%m.%Y} (UTC)")
+                  lines.append("")
+                  for r in sorted(results, key=lambda r: (-r["score"], r["label"])):
+                      shown = round(r["score"])          # подпись считаем по показанному числу
+                      _, emoji, caption = band_for(shown)
+                      lines.append(f"{emoji} <b>{html.escape(r['label'], quote=False)}</b> · {shown}/100 · {caption}")
+                      tags = [f"{ARROW[s.verdict]} {html.escape(s.tag, quote=False)}"
+                              for s in r["signals"] if s.verdict != "neutral"]
+                      lines.append("    " + ("  ".join(tags) if tags else "явных сигналов нет"))
+                  lines.append("")
+                  lines.append("<i>▲ - в пользу роста, ▼ - в пользу падения. Оценка 0-100 (50 = нейтрально) - "
+                               "взвешенный счёт классических индикаторов.</i>")
+                  lines.append("<i>Это не прогноз и не торговый сигнал: в отличие от стратегии бота, "
+                               "оценка не проходила бэктест.</i>")
+              if errors:
+                  if lines:
+                      lines.append("")
+                  lines.append("⚠️ <b>Не удалось получить данные:</b>")
+                  for label, error in errors:
+                      lines.append(f"{html.escape(label, quote=False)}: {html.escape(error, quote=False)}")
+
+              messages, current = [], ""
+              for line in lines:
+                  if current and len(current) + len(line) + 1 > TELEGRAM_LIMIT:
+                      messages.append(current)
+                      current = ""
+                  current = f"{current}\n{line}" if current else line
+              if current:
+                  messages.append(current)
+              return messages
+
+
+          def format_details(results):
+              """Полное обоснование по каждой монете - для лога Actions."""
+              out = []
+              for r in sorted(results, key=lambda r: (-r["score"], r["label"])):
+                  shown = round(r["score"])
+                  _, _, caption = band_for(shown)
+                  out.append(f"=== {r['label']}: {shown}/100 - {caption} "
+                             f"(цена {r['metrics']['price']:,.4f})")
+                  for s in r["signals"]:
+                      out.append(f"  {ARROW[s.verdict]} {s.tag}: {s.reason}")
+              return "\n".join(out)
+
+
+          def to_plain(text):
+              return html.unescape(re.sub(r"<[^>]+>", "", text))
+
+
+          def send_telegram(token, chat_id, text):
+              url = f"https://api.telegram.org/bot{token}/sendMessage"
+              reply = http_json(url, payload={"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
+              if not reply.get("ok"):
+                  raise RuntimeError(f"Telegram: {reply.get('description', 'ошибка')}")
+
+
+          # ---------------------------------------------------------------- ЗАПУСК
+          def main():
+              for stream in (sys.stdout, sys.stderr):
+                  try:
+                      stream.reconfigure(encoding="utf-8", errors="replace")
+                  except Exception:
+                      pass
+              token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+              chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+
+              results, errors = [], []
+              for i, (label, inst_id) in enumerate(COINS):
+                  if i:
+                      time.sleep(PAUSE_SEC)
+                  try:
+                      candles = fetch_daily(inst_id)
+                      if len(candles) < MIN_CANDLES:
+                          raise RuntimeError(f"мало истории ({len(candles)} дн.)")
+                      results.append(analyze(label, candles))
+                      print(f"✓ {label}")
+                  except Exception as exc:
+                      message = scrub(str(exc), token, chat_id)
+                      errors.append((label, message))
+                      print(f"✗ {label}: {message}")
+
+              if results:
+                  print()
+                  print(format_details(results))
+                  print()
+              messages = format_messages(results, errors)
+              for text in messages:
+                  print(to_plain(text))
+                  print()
+
+              if not results:
+                  print("Не удалось получить данные ни по одной монете.")
+                  return 1
+              if not (token and chat_id):
+                  print("Секреты TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID не заданы - в Telegram не отправляю.")
+                  return 0
+              try:
+                  for text in messages:
+                      send_telegram(token, chat_id, text)
+              except Exception as exc:
+                  print(f"Не удалось отправить в Telegram: {scrub(str(exc), token, chat_id)}")
+                  return 2
+              print("Отправлено в Telegram.")
+              return 0
+
+
+          if __name__ == "__main__":
+              sys.exit(main())
+          PYEOF
